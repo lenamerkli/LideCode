@@ -49,6 +49,7 @@ export class Chat {
   private readonly _container_name: string
   private _generation_handle: GenerationHandle | undefined
   private _generation_cancelled: boolean = false
+  private _generation_error: string | undefined
   private _waiting_for_tool_response: number = 0
   private _cost: number = 0
   private _tool_runners: Record<string, (args: Record<string, unknown>) => Promise<string>> = {
@@ -130,9 +131,12 @@ export class Chat {
     if (this._waiting_for_tool_response > 0) {
       throw new Error("Cannot start generation while waiting for tool response")
     }
-    this._generation_handle = this._llm.generate(this._conversation, this._tools)
+    const handle = this._llm.generate(this._conversation, this._tools)
+    this._generation_handle = handle
     this._generation_cancelled = false
-    this._generation_handle.done.then((generation_result) => {
+    this._generation_error = undefined
+    handle.done.then((generation_result) => {
+      this._generation_handle = undefined
       this._conversation.messages.push(generation_result.message)
       this._cost += generation_result.cost ?? 0
       for (const tool_call of generation_result.message.toolCalls) {
@@ -143,6 +147,11 @@ export class Chat {
             this.generate()
           }
         })
+      }
+    }).catch((error: unknown) => {
+      this._generation_handle = undefined
+      if (!this._generation_cancelled) {
+        this._generation_error = error instanceof Error ? error.message : String(error)
       }
     })
   }
@@ -362,6 +371,31 @@ export class Chat {
 
   get project_name(): string {
     return this._project_name
+  }
+
+  /** Whether a generation or tool execution is currently in progress. */
+  get busy(): boolean {
+    return this._generation_handle !== undefined || this._waiting_for_tool_response > 0
+  }
+
+  /** Current generation handle, or undefined if no generation is active. */
+  get generation_handle(): GenerationHandle | undefined {
+    return this._generation_handle
+  }
+
+  /** Error message of the last failed generation, if any. */
+  get error(): string | undefined {
+    return this._generation_error
+  }
+
+  /** Total cost in credits accumulated by this chat. */
+  get cost(): number {
+    return this._cost
+  }
+
+  /** The full conversation, including the system prompt. */
+  get conversation(): Conversation {
+    return this._conversation
   }
 
 }
