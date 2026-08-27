@@ -1,0 +1,30 @@
+{
+  "name": "lidecode",
+  "version": "1.0.0",
+  "description": "",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lenamerkli/LideCode.git"
+  },
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/lenamerkli/LideCode/issues"
+  },
+  "homepage": "https://github.com/lenamerkli/LideCode#readme",
+  "dependencies": {
+    "@openrouter/sdk": "^1.2.66",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.3.0",
+    "typescript": "^7.0.2"
+  }
+}

@@ -256,3 +256,4 @@ dmypy.json
 cython_debug/
 flet-docs/
 headroom/
+node_modules/
