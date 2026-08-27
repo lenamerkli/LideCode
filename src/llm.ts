@@ -19,6 +19,12 @@ export interface GenerationHandle {
 
   /** Resolves when the stream finishes; rejects on pre-stream or mid-stream errors. */
   readonly done: Promise<GenerationResult>;
+
+  /**
+   * Aborts the underlying request/stream. The `done` promise will reject with
+   * an abort error. Safe to call multiple times and after completion.
+   */
+  cancel(): void;
 }
 
 export interface GenerationResult {
@@ -57,9 +63,9 @@ interface StreamChunk {
 
 type StreamChunkChoice = StreamChoice;
 
-export function get_llm_class(model: Model): typeof LLM {
+export function get_llm(model: Model, temperature: number | undefined): LLM {
   if (model.provider == Providers.OpenRouter) {
-    return OpenRouterLLM;
+    return new OpenRouterLLM(model, temperature);
   }
   throw new Error(`Unknown provider: ${model.provider}`);
 }
@@ -96,6 +102,8 @@ export class OpenRouterLLM extends LLM {
     // Tool-call fragments, accumulated per tool-call index.
     const toolCallFragments = new Map<number, {id?: string | undefined; name: string; args: string}>();
 
+    const abort_controller = new AbortController();
+
     const done = (async (): Promise<GenerationResult> => {
       const chatRequest: Record<string, unknown> = {
         model: this.model.tech_name,
@@ -110,7 +118,7 @@ export class OpenRouterLLM extends LLM {
         chatRequest["tools"] = tools;
       }
 
-      const response = await client.chat.send({chatRequest} as never);
+      const response = await client.chat.send({chatRequest} as never, {signal: abort_controller.signal});
 
       // With `stream: true` the SDK returns an EventStream of chunks.
       const stream = response as unknown as AsyncIterable<StreamChunk>;
@@ -199,6 +207,7 @@ export class OpenRouterLLM extends LLM {
       get thinking() { return thinking; },
       get isDone() { return finished; },
       done,
+      cancel() { abort_controller.abort(); },
     };
   }
 }

@@ -42,7 +42,7 @@ export const DEFAULT_TOOLS: Tool[] = [
           directory: {
             type: "string",
             description: "The working directory to execute the command in",
-            default: "/home/agent/"
+            default: "/home/agent"
           },
           venv: {
             type: "string",

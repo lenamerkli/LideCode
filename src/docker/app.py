@@ -47,16 +47,11 @@ def bash():
             timeout=timeout,
             cwd=directory
         )
-        response = {
+        return {
             'stdout': result.stdout,
             'stderr': result.stderr,
             'returncode': result.returncode
         }
-        # max_chars cuts off the entire tool response, not just stdout
-        serialized = json.dumps(response)
-        if len(serialized) > max_chars:
-            response = {'output': serialized[:max_chars]}
-        return response
     except Exception as e:
         return {'error': str(e)}, 500
 
@@ -151,12 +146,6 @@ def replace_in_file():
             if orig_idx == -1:
                 break
             new_idx = orig_idx + (match_count * delta)
-            # occurrences.append({
-            #     'original_index': orig_idx,
-            #     'new_index': new_idx,
-            #     'original_span': [orig_idx, orig_idx + search_len],
-            #     'new_span': [new_idx, new_idx + replace_len]
-            # })
             occurrences.append({
                 'old_start': orig_idx,
                 'old_end': orig_idx + search_len - 1,

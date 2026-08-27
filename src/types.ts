@@ -385,9 +385,9 @@ export class AssistantMessage {
 export class ToolMessage {
   readonly role: Role = "tool";
   private _toolCallId: string;
-  private _content: Content;
+  private _content: string;
 
-  constructor(toolCallId: string, content: Content) {
+  constructor(toolCallId: string, content: string) {
     this._toolCallId = toolCallId;
     this._content = content;
   }
@@ -400,7 +400,7 @@ export class ToolMessage {
     return {
       role: "tool",
       tool_call_id: this.toolCallId,
-      content: normalizeContent(this.content),
+      content: this.content,
     };
   }
 
@@ -412,11 +412,11 @@ export class ToolMessage {
     this._toolCallId = toolCallId;
   }
 
-  get content(): Content {
+  get content(): string {
     return this._content;
   }
 
-  set content(content: Content) {
+  set content(content: string) {
     this._content = content;
   }
 }
@@ -443,6 +443,10 @@ export class Conversation {
     return {
       messages: this.messages.map((message) => message.toJSON()),
     };
+  }
+
+  push(message: Message): void {
+    this._messages.push(message);
   }
 
   get messages(): Message[] {
