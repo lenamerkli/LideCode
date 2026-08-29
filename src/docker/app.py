@@ -160,7 +160,7 @@ def replace_in_file():
         path.write_text(new_content, encoding='utf-8')
         response: dict = {
             'replacements': len(occurrences),
-            'indices': occurrences
+            'occurrences': occurrences
         }
         if read:
             response['content'] = new_content

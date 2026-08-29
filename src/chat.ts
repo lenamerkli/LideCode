@@ -311,7 +311,7 @@ export class Chat {
     }
     let output = '<note>Made ' + response.replacements + ' replacement(s) in <path>' + path + '</path></note>\n'
     if (response.occurrences) {
-      output += '<ocurrences>\n'
+      output += '<occurrences>\n'
     }
     for (const occurrence of response.occurrences) {
       output += '<occurrence>\n'
@@ -321,8 +321,8 @@ export class Chat {
       output += '<new_end_character>' + occurrence.new_end + '</new_end_character>\n'
       output += '</occurrence>\n'
     }
-    if (response.ocurrences) {
-      output += '</ocurrences>\n'
+    if (response.occurrences) {
+      output += '</occurrences>\n'
     }
     if (read) {
       output += '<content>' + response.content + '</content>\n'
