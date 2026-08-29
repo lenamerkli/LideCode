@@ -343,7 +343,8 @@ export class Chat {
     if (response.error) {
       return response.error
     }
-    this._conversation.push(new UserMessage([new TextContent('Result from the "view_image" tool call.'), new ImageContent(Uint8Array.from(response.data_url.split(',').pop() || ''))]))
+    const base64 = response.data_url.split(',').pop() || ''
+    this._conversation.push(new UserMessage([new TextContent('Result from the "view_image" tool call.'), new ImageContent(new Uint8Array(Buffer.from(base64, 'base64')))]))
     return "See the user message."
   }
 
