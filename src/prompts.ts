@@ -45,6 +45,10 @@ export function build_system_prompt(model: Model, project_name: string, tools: T
         prompt += "### view_image\n"
         prompt += format_tool_call({name: "view_image", arguments: {path: "/home/agent/Downloads/image0001.png"}}, model)
         break
+      case "websearch":
+        prompt += "### websearch\n"
+        prompt += format_tool_call({name: "websearch", arguments: {query: "typescript date-fns format UTC timezone", count: 5, freshness: "py"}}, model)
+        break
     }
   }
   return prompt

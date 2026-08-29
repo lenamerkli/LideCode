@@ -3,19 +3,18 @@ import {
   Conversation,
   ImageContent,
   Model,
-  Providers,
   TextContent,
   ToolCall, ToolMessage,
   UserMessage
 } from "./types";
 import {execSync} from "node:child_process";
-import {DEFAULT_TOOLS, Tool, VIEWIMAGE_TOOL} from "./tool_definitions";
+import {DEFAULT_TOOLS, Tool, VIEWIMAGE_TOOL, WEBSEARCH_TOOL} from "./tool_definitions";
 import {build_system_prompt} from "./prompts";
 import {LLM, get_llm, GenerationHandle} from "./llm";
 import {join} from "node:path";
 import {chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync} from "node:fs";
 import {randomBytes} from "node:crypto";
-import {synchronousGetRequest, synchronousPostRequest} from "./util";
+import {synchronousGetRequestWithHeaders, synchronousGetRequest, synchronousPostRequest} from "./util";
 
 export const IMAGE_NAME = 'lidecode_debian_13'
 export const CONTAINER_PREFIX = 'lidecode_'
@@ -57,7 +56,8 @@ export class Chat {
     'read_file': this.execute_read_file.bind(this),
     'write_to_file': this.execute_write_to_file.bind(this),
     'replace_in_file': this.execute_replace_in_file.bind(this),
-    'view_image': this.execute_view_image.bind(this)
+    'view_image': this.execute_view_image.bind(this),
+    'websearch': this.execute_websearch.bind(this)
   }
 
   constructor(model: Model, temperature: number | undefined, project_name: string) {
@@ -68,6 +68,9 @@ export class Chat {
     this._ip= CONTAINER_IP_PREFIX + Math.floor(Math.random() * 255).toString()
     this._container_name = CONTAINER_PREFIX + this._ip.split('.').pop()
     this._tools = DEFAULT_TOOLS
+    if (process.env.BRAVE_SEARCH_API_KEY) {
+      this._tools.push(WEBSEARCH_TOOL)
+    }
     if (model.supports_vision) {
       this._tools.push(VIEWIMAGE_TOOL)
     }
@@ -342,6 +345,101 @@ export class Chat {
     }
     this._conversation.push(new UserMessage([new TextContent('Result from the "view_image" tool call.'), new ImageContent(Uint8Array.from(response.data_url.split(',').pop() || ''))]))
     return "See the user message."
+  }
+
+  async execute_websearch(args: Record<string, unknown>): Promise<string> {
+    if (!process.env.BRAVE_SEARCH_API_KEY) {
+      return 'Web search is not available: no BRAVE_SEARCH_API_KEY is configured.'
+    }
+    if (!args.query) {
+      return 'The parameter "query" is required'
+    }
+    if (typeof args.query != "string") {
+      return 'The parameter "query" must be a string'
+    }
+    const query: string = args.query
+    if (query.length > 400) {
+      return 'The parameter "query" must not exceed 400 characters'
+    }
+    if (query.split(/\s+/).filter(Boolean).length > 50) {
+      return 'The parameter "query" must not exceed 50 words'
+    }
+    if (args.count && typeof args.count != "number") {
+      return 'The parameter "count" must be a number'
+    }
+    const count: number = Math.min(Math.max(Math.floor(typeof args.count === "number" ? args.count : 10), 1), 20)
+    if (args.offset && typeof args.offset != "number") {
+      return 'The parameter "offset" must be a number'
+    }
+    const offset: number = Math.min(Math.max(Math.floor(typeof args.offset === "number" ? args.offset : 0), 0), 9)
+    if (args.freshness && typeof args.freshness != "string") {
+      return 'The parameter "freshness" must be a string'
+    }
+    const freshness: string | undefined = typeof args.freshness === "string" ? args.freshness : undefined
+    if (freshness !== undefined && !/^(pd|pw|pm|py|\d{4}-\d{2}-\d{2}to\d{4}-\d{2}-\d{2})$/.test(freshness)) {
+      return 'The parameter "freshness" must be one of pd, pw, pm, py or a range like YYYY-MM-DDtoYYYY-MM-DD'
+    }
+    if (args.country && typeof args.country != "string") {
+      return 'The parameter "country" must be a string'
+    }
+    const country: string = typeof args.country === "string" ? args.country : 'US'
+    if (args.search_lang && typeof args.search_lang != "string") {
+      return 'The parameter "search_lang" must be a string'
+    }
+    const search_lang: string = typeof args.search_lang === "string" ? args.search_lang : 'en'
+    const params = new URLSearchParams({
+      q: query,
+      count: String(count),
+      offset: String(offset),
+      country: country,
+      search_lang: search_lang,
+      spellcheck: 'false',
+      text_decorations: 'false',
+      units: 'metric',
+      result_filter: 'web',
+      extra_snippets: 'true'
+    })
+    if (freshness !== undefined) {
+      params.set('freshness', freshness)
+    }
+    let response: Record<string, unknown>
+    try {
+      const raw_response = synchronousGetRequestWithHeaders('https://api.search.brave.com/res/v1/web/search?' + params.toString(), {
+        'Accept': 'application/json',
+        'Accept-Encoding': 'gzip',
+        'X-Subscription-Token': process.env.BRAVE_SEARCH_API_KEY
+      })
+      response = JSON.parse(raw_response)
+    } catch (error: unknown) {
+      return 'Web search request failed: ' + (error instanceof Error ? error.message : String(error))
+    }
+    const web = response.web as {results?: Record<string, unknown>[]} | undefined
+    const results = web?.results
+    if (!results || results.length === 0) {
+      return 'No web results found for the query: ' + query
+    }
+    let output = '<query>' + query + '</query>\n'
+    for (const result of results) {
+      output += '<result>\n'
+      output += '<title>' + (result.title ?? '') + '</title>\n'
+      output += '<url>' + (result.url ?? '') + '</url>\n'
+      if (result.description) {
+        output += '<description>' + result.description + '</description>\n'
+      }
+      if (result.page_age) {
+        output += '<page_age>' + result.page_age + '</page_age>\n'
+      }
+      const extra_snippets = result.extra_snippets as string[] | undefined
+      if (extra_snippets && extra_snippets.length > 0) {
+        output += '<extra_snippets>\n'
+        for (const snippet of extra_snippets) {
+          output += '<snippet>' + snippet + '</snippet>\n'
+        }
+        output += '</extra_snippets>\n'
+      }
+      output += '</result>\n'
+    }
+    return output
   }
 
   get model(): Model {

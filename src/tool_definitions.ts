@@ -152,6 +152,48 @@ export const DEFAULT_TOOLS: Tool[] = [
   }
 ];
 
+export const WEBSEARCH_TOOL: Tool = {
+  type: "function",
+  function: {
+    name: "websearch",
+    description: "Search the web and return a list of web results with title, url, description and age.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "The search query. Maximum 400 characters and 50 words."
+        },
+        count: {
+          type: "integer",
+          description: "The number of search results returned. Maximum 20. The actual number delivered may be less.",
+          default: 10
+        },
+        offset: {
+          type: "integer",
+          description: "The zero based page offset to skip before returning results. Used together with count to paginate. Maximum 9.",
+          default: 0
+        },
+        freshness: {
+          type: "string",
+          description: "Filter results by page age: 'pd' (24 hours or less), 'pw' (7 days or less), 'pm' (31 days or less), 'py' (365 days or less), or a custom range like 'YYYY-MM-DDtoYYYY-MM-DD'"
+        },
+        country: {
+          type: "string",
+          description: "The 2 character country code where the search results come from, e.g. 'US' or 'DE'",
+          default: "US"
+        },
+        search_lang: {
+          type: "string",
+          description: "The language code for which the search results are provided, e.g. 'en' or 'de'",
+          default: "en"
+        }
+      },
+      required: ["query"]
+    }
+  }
+}
+
 export const VIEWIMAGE_TOOL: Tool = {
   type: "function",
   function: {
