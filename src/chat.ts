@@ -14,7 +14,7 @@ import {LLM, get_llm, GenerationHandle} from "./llm";
 import {join} from "node:path";
 import {chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync} from "node:fs";
 import {randomBytes} from "node:crypto";
-import {synchronousGetRequestWithHeaders, synchronousGetRequest, synchronousPostRequest} from "./util";
+import {getRequestWithHeaders, getRequest, postRequest} from "./util";
 
 export const IMAGE_NAME = 'lidecode_debian_13'
 export const CONTAINER_PREFIX = 'lidecode_'
@@ -114,10 +114,10 @@ export class Chat {
     execSync(command)
   }
 
-  check_health(): boolean {
+  async check_health(): Promise<boolean> {
     let returns = false
     try{
-      const response = synchronousGetRequest('http://' + this._ip + ':' + INTERNAL_PORT + '/')
+      const response = await getRequest('http://' + this._ip + ':' + INTERNAL_PORT + '/')
       returns = JSON.parse(response).status === 'ok'
     } catch (e) {}
     return returns
@@ -204,7 +204,7 @@ export class Chat {
       return 'The parameter "max_chars" must be a number'
     }
     const max_chars: number = typeof args.max_chars === "number" ? args.max_chars : 1000000
-    const raw_response = synchronousPostRequest('http://' + this._ip + ':' + INTERNAL_PORT + '/bash', {command: command, timeout: timeout, directory: directory, venv: venv, max_chars: max_chars})
+    const raw_response = await postRequest('http://' + this._ip + ':' + INTERNAL_PORT + '/bash', {command: command, timeout: timeout, directory: directory, venv: venv, max_chars: max_chars})
     const response = JSON.parse(raw_response)
     if (response.error) {
       return response.error
@@ -247,7 +247,7 @@ export class Chat {
       return 'The parameter "max_chars" must be a number'
     }
     const max_chars: number = typeof args.max_chars === "number" ? args.max_chars : 1000000
-    const raw_response = synchronousPostRequest('http://' + this._ip + ':' + INTERNAL_PORT + '/read_file', {path: path, start_line: start_line, end_line: end_line, start_char: start_char, end_char: end_char, max_chars: max_chars})
+    const raw_response = await postRequest('http://' + this._ip + ':' + INTERNAL_PORT + '/read_file', {path: path, start_line: start_line, end_line: end_line, start_char: start_char, end_char: end_char, max_chars: max_chars})
     const response = JSON.parse(raw_response)
     if (response.error) {
       return response.error
@@ -270,7 +270,7 @@ export class Chat {
       return 'The parameter "content" must be a string'
     }
     const content: string = args.content
-    const raw_response = synchronousPostRequest('http://' + this._ip + ':' + INTERNAL_PORT + '/write_to_file', {path: path, content: content})
+    const raw_response = await postRequest('http://' + this._ip + ':' + INTERNAL_PORT + '/write_to_file', {path: path, content: content})
     const response = JSON.parse(raw_response)
     if (response.error) {
       return response.error
@@ -304,7 +304,7 @@ export class Chat {
       return 'The parameter "read" must be a boolean'
     }
     const read: boolean = typeof args.read === "boolean" ? args.read : false
-    const raw_response = synchronousPostRequest('http://' + this._ip + ':' + INTERNAL_PORT + '/replace_in_file', {path: path, search: search, replace: replace, read: read})
+    const raw_response = await postRequest('http://' + this._ip + ':' + INTERNAL_PORT + '/replace_in_file', {path: path, search: search, replace: replace, read: read})
     const response = JSON.parse(raw_response)
     if (response.error) {
       return response.error
@@ -338,7 +338,7 @@ export class Chat {
       return 'The parameter "path" must be a string'
     }
     const path: string = args.path
-    const raw_response = synchronousPostRequest('http://' + this._ip + ':' + INTERNAL_PORT + '/view_image', {path: path})
+    const raw_response = await postRequest('http://' + this._ip + ':' + INTERNAL_PORT + '/view_image', {path: path})
     const response = JSON.parse(raw_response)
     if (response.error) {
       return response.error
@@ -404,9 +404,8 @@ export class Chat {
     }
     let response: Record<string, unknown>
     try {
-      const raw_response = synchronousGetRequestWithHeaders('https://api.search.brave.com/res/v1/web/search?' + params.toString(), {
+      const raw_response = await getRequestWithHeaders('https://api.search.brave.com/res/v1/web/search?' + params.toString(), {
         'Accept': 'application/json',
-        'Accept-Encoding': 'gzip',
         'X-Subscription-Token': process.env.BRAVE_SEARCH_API_KEY
       })
       response = JSON.parse(raw_response)

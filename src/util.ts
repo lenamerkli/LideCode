@@ -1,37 +1,29 @@
 
 
-export function synchronousGetRequest(url: string): string {
-    const xhr = new XMLHttpRequest();
-    xhr.open('GET', url, false); // false = synchronous
-    xhr.send(null);
-    if (xhr.status === 200) {
-        return xhr.responseText;
-    } else {
-        throw new Error('Request failed: ' + xhr.statusText);
+export async function getRequest(url: string): Promise<string> {
+    const response = await fetch(url, { method: 'GET' });
+    if (!response.ok) {
+        throw new Error('Request failed: ' + response.status + ' ' + response.statusText);
     }
+    return response.text();
 }
 
-export function synchronousGetRequestWithHeaders(url: string, headers: Record<string, string>): string {
-    const xhr = new XMLHttpRequest();
-    xhr.open('GET', url, false); // false = synchronous
-    for (const [key, value] of Object.entries(headers)) {
-        xhr.setRequestHeader(key, value);
+export async function getRequestWithHeaders(url: string, headers: Record<string, string>): Promise<string> {
+    const response = await fetch(url, { method: 'GET', headers: headers });
+    if (!response.ok) {
+        throw new Error('Request failed with status ' + response.status + ': ' + await response.text());
     }
-    xhr.send(null);
-    if (xhr.status === 200) {
-        return xhr.responseText;
-    } else {
-        throw new Error('Request failed with status ' + xhr.status + ': ' + xhr.responseText);
-    }
+    return response.text();
 }
 
-export function synchronousPostRequest(url: string, json: any): string {
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', url, false); // false = synchronous
-    xhr.send(JSON.stringify(json));
-    if (xhr.status === 200) {
-        return xhr.responseText;
-    } else {
-        throw new Error('Request failed: ' + xhr.statusText);
+export async function postRequest(url: string, json: unknown): Promise<string> {
+    const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(json)
+    });
+    if (!response.ok) {
+        throw new Error('Request failed: ' + response.status + ' ' + response.statusText);
     }
+    return response.text();
 }
