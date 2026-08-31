@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LideCode — Test Interface</title>
+<style>
+  :root { font-family: system-ui, sans-serif; }
+  body { margin: 0; display: flex; flex-direction: column; height: 100vh; background: #f5f6f8; }
+  header { padding: .6rem 1rem; background: #1f2937; color: #fff; display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; }
+  header h1 { font-size: 1rem; margin: 0; }
+  header label { font-size: .85rem; }
+  select, input, button { font: inherit; padding: .3rem .5rem; border-radius: 6px; border: 1px solid #9ca3af; }
+  button { cursor: pointer; background: #3b82f6; color: #fff; border: none; }
+  button:disabled { background: #9ca3af; cursor: default; }
+  button.danger { background: #ef4444; }
+  #status { margin-left: auto; font-size: .8rem; opacity: .8; }
+  #messages { flex: 1; overflow-y: auto; padding: 1rem; display: flex; flex-direction: column; gap: .6rem; }
+  .msg { max-width: 75%; padding: .55rem .8rem; border-radius: 10px; white-space: pre-wrap; word-break: break-word; font-size: .9rem; }
+  .msg.user { align-self: flex-end; background: #3b82f6; color: #fff; }
+  .msg.assistant { align-self: flex-start; background: #fff; border: 1px solid #e5e7eb; }
+  .msg.error { align-self: center; background: #fee2e2; color: #991b1b; border: 1px solid #fca5a5; }
+  .msg .meta { display: block; font-size: .7rem; opacity: .6; margin-bottom: .25rem; }
+  form { display: flex; gap: .5rem; padding: .8rem; background: #fff; border-top: 1px solid #e5e7eb; }
+  #input { flex: 1; resize: none; height: 3.2em; }
+</style>
+</head>
+<body>
+<header>
+  <h1>LideCode Test Interface</h1>
+  <label>Model <select id="model"><option>Loading…</option></select></label>
+  <label>Project <input id="project" type="text" value="test-project" size="12"></label>
+  <button id="new" type="button">New chat</button>
+  <button id="cancel" type="button" disabled>Cancel</button>
+  <button id="delete" type="button" class="danger" disabled>Delete chat</button>
+  <span id="status"></span>
+</header>
+
+<div id="messages"></div>
+
+<form id="composer">
+  <textarea id="input" placeholder="Type a message… (Ctrl+Enter to send)"></textarea>
+  <button id="send" type="submit" disabled>Send</button>
+</form>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const messagesEl = $('messages'), statusEl = $('status');
+
+let chatId = null;
+let pollTimer = null;
+
+function setStatus(text) { statusEl.textContent = text; }
+
+function setBusy(busy) {
+  $('send').disabled = busy || !chatId;
+  $('cancel').disabled = !busy;
+  $('new').disabled = busy;
+  $('delete').disabled = busy || !chatId;
+}
+function addMessage(role, text) {
+  const div = document.createElement('div');
+  div.className = 'msg ' + role;
+  if (role === 'assistant') {
+    const meta = document.createElement('span');
+    meta.className = 'meta';
+    meta.textContent = 'assistant';
+    div.appendChild(meta);
+  }
+  div.appendChild(document.createTextNode(text));
+  messagesEl.appendChild(div);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+  return div;
+}
+
+async function api(path, options) {
+  const res = await fetch(path, options);
+  if (res.status === 204) return null;
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || (res.status + ' ' + res.statusText));
+  return data;
+}
+
+async function loadModels() {
+  try {
+    const data = await api('/models');
+    const select = $('model');
+    select.innerHTML = '';
+    for (const m of data.models) {
+      const opt = document.createElement('option');
+      opt.value = m.name;
+      opt.textContent = m.name;
+      select.appendChild(opt);
+    }
+  } catch (err) {
+    setStatus('Failed to load models: ' + err.message);
+  }
+}
+
+function renderState(state) {
+  messagesEl.innerHTML = '';
+  for (const m of state.messages) {
+    if (m.role === 'system') continue;
+    let text;
+    if (Array.isArray(m.content)) {
+      text = m.content.filter((p) => p.type === 'text').map((p) => p.text).join('\n');
+    } else {
+      text = String(m.content ?? '');
+    }
+    if (m.role === 'tool') {
+      addMessage('assistant', '[tool result] ' + text);
+    } else if (m.role === 'assistant' && m.tool_calls && m.tool_calls.length) {
+      addMessage('assistant', '[tool calls] ' + m.tool_calls.map((c) => c.function.name + '(' + c.function.arguments + ')').join(', '));
+    } else {
+      addMessage(m.role === 'user' ? 'user' : 'assistant', text);
+    }
+  }
+  if (state.error) addMessage('error', 'Error: ' + state.error);
+  setStatus('id ' + state.id.slice(0, 8) + ' · ' + state.model + ' · cost ' + (state.cost ?? 0));
+}
+
+async function poll() {
+  if (!chatId) return;
+  try {
+    const state = await api('/chats/' + chatId);
+    renderState(state);
+    if (!state.finished) {
+      const gen = await api('/chats/' + chatId + '/generation');
+      if (gen.available && !gen.isDone && gen.text) {
+        let live = $('live');
+        if (!live) {
+          live = addMessage('assistant', '');
+          live.id = 'live';
+        }
+        live.lastChild.textContent = gen.text;
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+      }
+      setBusy(true);
+      pollTimer = setTimeout(poll, 700);
+    } else {
+      const live = $('live');
+      if (live) live.removeAttribute('id');
+      setBusy(false);
+    }
+  } catch (err) {
+    setStatus('Poll failed: ' + err.message);
+    setBusy(false);
+  }
+}
+
+async function createChat() {
+  try {
+    const data = await api('/chats', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: $('model').value,
+        project_name: $('project').value || 'test-project',
+      }),
+    });
+    chatId = data.id;
+    messagesEl.innerHTML = '';
+    addMessage('assistant', 'Chat created (' + data.model + '). Container is starting…');
+    setStatus('id ' + chatId.slice(0, 8));
+    setBusy(false);
+  } catch (err) {
+    addMessage('error', 'Create chat failed: ' + err.message);
+  }
+}
+
+$('new').addEventListener('click', createChat);
+$('cancel').addEventListener('click', async () => {
+  if (!chatId) return;
+  try { await api('/chats/' + chatId + '/cancel', { method: 'POST' }); } catch (err) { setStatus(err.message); }
+});
+$('delete').addEventListener('click', async () => {
+  if (!chatId) return;
+  const id = chatId;
+  chatId = null;
+  clearTimeout(pollTimer);
+  messagesEl.innerHTML = '';
+  setStatus('deleted');
+  setBusy(true);
+  try { await api('/chats/' + id, { method: 'DELETE' }); } catch (err) { setStatus(err.message); }
+  setBusy(false);
+});
+
+$('composer').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const input = $('input');
+  const text = input.value.trim();
+  if (!text || !chatId) return;
+  input.value = '';
+  addMessage('user', text);
+  setBusy(true);
+  try {
+    await api('/chats/' + chatId + '/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: text }),
+    });
+    poll();
+  } catch (err) {
+    addMessage('error', 'Send failed: ' + err.message);
+    setBusy(false);
+  }
+});
+
+$('input').addEventListener('keydown', (event) => {
+  if (event.key === 'Enter' && event.ctrlKey) {
+    event.preventDefault();
+    $('composer').requestSubmit();
+  }
+});
+
+loadModels();
+
+</script>
+</body>
+</html>

@@ -20,7 +20,7 @@ export const IMAGE_NAME = 'lidecode_debian_13'
 export const CONTAINER_PREFIX = 'lidecode_'
 export const INTERNAL_PORT = 50000
 export const NETWORK_NAME = 'lidecode_net'
-export const CONTAINER_IP_PREFIX = '172.30.0.'
+export const CONTAINER_IP_PREFIX = '172.30.1.'
 const TOKEN_DIR = "/opt/LideCode";
 const TOKEN_FILE = join(TOKEN_DIR, "access_token");
 
@@ -87,7 +87,7 @@ export class Chat {
     this._llm = get_llm(model, temperature)
     this._temperature = temperature
     this._project_name = project_name
-    this._ip= CONTAINER_IP_PREFIX + Math.floor(Math.random() * 255).toString()
+    this._ip= CONTAINER_IP_PREFIX + Math.floor(Math.random() * 254 + 1).toString()
     this._container_name = CONTAINER_PREFIX + this._ip.split('.').pop()
     this._tools = DEFAULT_TOOLS
     if (process.env.BRAVE_SEARCH_API_KEY) {
@@ -102,18 +102,23 @@ export class Chat {
   async ensure_docker_image(): Promise<void> {
     const stdout = await run('docker', ['images']);
     if (!stdout.includes(IMAGE_NAME)) {
+      console.log('Docker image not found, building...');
       await run('docker', ['build', '-t', IMAGE_NAME, '-f', '/opt/LideCode/docker/DOCKERFILE', '/opt/LideCode/docker'], {timeout: 900_000})
+      console.log('Docker image built');
     }
   }
 
   async ensure_docker_network(): Promise<void> {
     const stdout = await run('docker', ['network', 'ls']);
     if (!stdout.includes(NETWORK_NAME)) {
-      await run('docker', ['network', 'create', '--subnet=172.30.0.0/16', NETWORK_NAME])
+      console.log('Docker network not found, creating...');
+      await run('docker', ['network', 'create', '--subnet=172.30.1.0/24', NETWORK_NAME])
+      console.log('Docker network created');
     }
   }
 
   async stop_docker(): Promise<void> {
+    console.log('Stopping Docker container...');
     const stdout = await run('docker', ['ps', '-q', '--filter', 'name=' + this._container_name]);
     if (stdout) {
       await run('docker', ['stop', this._container_name])
@@ -137,7 +142,9 @@ export class Chat {
       }
     }
     args.push(IMAGE_NAME)
+    console.log('Starting Docker container ' + this._container_name + '...');
     await run('docker', args)
+    console.log('Docker container ' + this._container_name + ' started');
   }
 
   async check_health(): Promise<boolean> {

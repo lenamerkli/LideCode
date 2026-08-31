@@ -1,6 +1,8 @@
 import dotenv from 'dotenv';
 import express, { NextFunction, Request, Response } from 'express';
 import { randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import { Chat } from './chat.js';
 import { MODELS } from './models.js';
 import { Model } from './types.js';
@@ -10,6 +12,10 @@ dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 9876;
+
+// Serve the static web interface from ../public (relative to dist/).
+const PUBLIC_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'public');
+app.use(express.static(PUBLIC_DIR));
 
 // Middleware to parse JSON
 app.use(express.json());

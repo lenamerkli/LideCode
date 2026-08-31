@@ -70,6 +70,12 @@ def prepare_target() -> None:
         shutil.rmtree(dist_target)
     shutil.copytree(DIST_DIR, dist_target)
 
+    # Static web interface.
+    public_target = TARGET_DIR / "public"
+    if public_target.exists():
+        shutil.rmtree(public_target)
+    shutil.copytree(PROJECT_ROOT / "public", public_target)
+
     # Node manifest files (needed by `npm ci` below).
     shutil.copy2(PACKAGE_JSON, TARGET_DIR / "package.json")
     shutil.copy2(PACKAGE_LOCK, TARGET_DIR / "package-lock.json")
