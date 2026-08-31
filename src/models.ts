@@ -1,4 +1,4 @@
-import {Model, Providers} from "./types";
+import {Model, Providers} from "./types.js";
 
 export const MODELS = [
   new Model("DeepSeek V4 Pro", "deepseek/deepseek-v4-pro-0813", Providers.OpenRouter, false, true, 1000000),

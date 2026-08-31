@@ -37,7 +37,8 @@
     "moduleDetection": "force",
     "skipLibCheck": true,
     "target": "ES6",                  // Compiles to modern JavaScript
-    "module": "ESNext",              // Use ES modules
+    "module": "NodeNext",            // Node ESM (requires .js extensions on imports)
+    "moduleResolution": "NodeNext",  // Resolve modules the way Node does
     "outDir": "./dist",              // Output compiled files to 'dist'
     "rootDir": "./src",              // Source files are in 'src'
     "strict": true,                  // Enable all strict type checks

@@ -6,15 +6,15 @@ import {
   TextContent,
   ToolCall, ToolMessage,
   UserMessage
-} from "./types";
+} from "./types.js";
 import {execFile} from "node:child_process";
-import {DEFAULT_TOOLS, Tool, VIEWIMAGE_TOOL, WEBSEARCH_TOOL} from "./tool_definitions";
-import {build_system_prompt} from "./prompts";
-import {LLM, get_llm, GenerationHandle} from "./llm";
+import {DEFAULT_TOOLS, Tool, VIEWIMAGE_TOOL, WEBSEARCH_TOOL} from "./tool_definitions.js";
+import {build_system_prompt} from "./prompts.js";
+import {LLM, get_llm, GenerationHandle} from "./llm.js";
 import {join} from "node:path";
 import {chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync} from "node:fs";
 import {randomBytes} from "node:crypto";
-import {getRequestWithHeaders, getRequest, postRequest} from "./util";
+import {getRequestWithHeaders, getRequest, postRequest} from "./util.js";
 
 export const IMAGE_NAME = 'lidecode_debian_13'
 export const CONTAINER_PREFIX = 'lidecode_'

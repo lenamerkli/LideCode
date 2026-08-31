@@ -1,4 +1,4 @@
-import {AssistantMessage, Conversation, Model, Providers, ToolCall, ToolCallFunction,} from "./types";
+import {AssistantMessage, Conversation, Model, Providers, ToolCall, ToolCallFunction,} from "./types.js";
 import {OpenRouter} from "@openrouter/sdk";
 
 /**

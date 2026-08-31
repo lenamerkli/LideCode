@@ -1,5 +1,5 @@
-import {Model} from "./types";
-import {Tool} from "./tool_definitions";
+import {Model} from "./types.js";
+import {Tool} from "./tool_definitions.js";
 
 
 interface ToolCall {
