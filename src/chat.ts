@@ -7,7 +7,7 @@ import {
   ToolCall, ToolMessage,
   UserMessage
 } from "./types";
-import {execSync} from "node:child_process";
+import {execFile} from "node:child_process";
 import {DEFAULT_TOOLS, Tool, VIEWIMAGE_TOOL, WEBSEARCH_TOOL} from "./tool_definitions";
 import {build_system_prompt} from "./prompts";
 import {LLM, get_llm, GenerationHandle} from "./llm";
@@ -23,6 +23,28 @@ export const NETWORK_NAME = 'lidecode_net'
 export const CONTAINER_IP_PREFIX = '172.30.0.'
 const TOKEN_DIR = "/opt/LideCode";
 const TOKEN_FILE = join(TOKEN_DIR, "access_token");
+
+/**
+ * Run a command asynchronously without a shell, passing arguments as an array
+ * so that no shell interpretation (and therefore no command injection) can
+ * occur. Resolves with stdout, rejects on non-zero exit or timeout.
+ */
+function run(command: string, args: string[], options?: {timeout?: number}): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    execFile(command, args, {
+      maxBuffer: 100 * 1024 * 1024,
+      timeout: options?.timeout ?? 300_000,
+    }, (error, stdout, stderr) => {
+      if (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const details = stderr ? ' — ' + stderr.toString().trim() : '';
+        reject(new Error(message + details));
+        return;
+      }
+      resolve(stdout.toString());
+    });
+  });
+}
 
 
 export function getOrCreateAccessToken(): string {
@@ -77,41 +99,45 @@ export class Chat {
     this._conversation = new Conversation([new AssistantMessage(build_system_prompt(model, project_name, this._tools))])
   }
 
-  ensure_docker_image(): void {
-    const stdout = execSync('docker images').toString();
+  async ensure_docker_image(): Promise<void> {
+    const stdout = await run('docker', ['images']);
     if (!stdout.includes(IMAGE_NAME)) {
-      execSync('docker build -t ' + IMAGE_NAME + ' -f /opt/LideCode/docker/DOCKERFILE /opt/LideCode/docker')
+      await run('docker', ['build', '-t', IMAGE_NAME, '-f', '/opt/LideCode/docker/DOCKERFILE', '/opt/LideCode/docker'], {timeout: 900_000})
     }
   }
 
-  ensure_docker_network(): void {
-    const stdout = execSync('docker network ls').toString();
+  async ensure_docker_network(): Promise<void> {
+    const stdout = await run('docker', ['network', 'ls']);
     if (!stdout.includes(NETWORK_NAME)) {
-      execSync('docker network create --subnet=172.30.0.0/16 ' + NETWORK_NAME)
+      await run('docker', ['network', 'create', '--subnet=172.30.0.0/16', NETWORK_NAME])
     }
   }
 
-  stop_docker(): void {
-    const stout = execSync('docker ps -q --filter name=' + this._container_name).toString();
-    if (stout) {
-      execSync('docker stop ' + this._container_name)
-      execSync('docker rm ' + this._container_name)
+  async stop_docker(): Promise<void> {
+    const stdout = await run('docker', ['ps', '-q', '--filter', 'name=' + this._container_name]);
+    if (stdout) {
+      await run('docker', ['stop', this._container_name])
+      await run('docker', ['rm', this._container_name])
     }
   }
 
-  start_docker(additional_volumes: [string, string][] | undefined, env: Record<string, string> | undefined) {
-    this.stop_docker()
-    this.ensure_docker_image()
-    this.ensure_docker_network()
-    let command = 'docker run -d --name ' + this._container_name + ' --network ' + NETWORK_NAME + ' --ip ' + this._ip + ' -e ACCESS_TOKEN=' + getOrCreateAccessToken() + ' '
+  async start_docker(additional_volumes: [string, string][] | undefined, env: Record<string, string> | undefined): Promise<void> {
+    await this.stop_docker()
+    await this.ensure_docker_image()
+    await this.ensure_docker_network()
+    const args = ['run', '-d', '--name', this._container_name, '--network', NETWORK_NAME, '--ip', this._ip, '-e', 'ACCESS_TOKEN=' + getOrCreateAccessToken()]
     if (additional_volumes) {
-      command += additional_volumes.map(([host, container]) => '-v ' + host + ':' + container + ' ').join('')
+      for (const [host, container] of additional_volumes) {
+        args.push('-v', host + ':' + container)
+      }
     }
     if (env) {
-      command += Object.entries(env).map(([key, value]) => '-e ' + key + '=' + value + ' ').join('')
+      for (const [key, value] of Object.entries(env)) {
+        args.push('-e', key + '=' + value)
+      }
     }
-    command += IMAGE_NAME
-    execSync(command)
+    args.push(IMAGE_NAME)
+    await run('docker', args)
   }
 
   async check_health(): Promise<boolean> {

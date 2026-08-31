@@ -76,7 +76,7 @@ app.get('/models', (_req: Request, res: Response) => {
 });
 
 // Create a new chat. The model is referenced by its unique display name.
-app.post('/chats', (req: Request, res: Response) => {
+app.post('/chats', async (req: Request, res: Response) => {
   const body = req.body as Record<string, unknown>;
   if (!body || typeof body !== 'object') {
     throw new ApiError(400, 'A JSON request body is required');
@@ -115,7 +115,7 @@ app.post('/chats', (req: Request, res: Response) => {
   const id = randomUUID();
   const chat = new Chat(model, temperature, projectName);
   try {
-    chat.start_docker(volumes, env);
+    await chat.start_docker(volumes, env);
   } catch (error: unknown) {
     throw new ApiError(500, `Failed to start the docker container: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -180,10 +180,10 @@ app.post('/chats/:id/cancel', (req: Request, res: Response) => {
 });
 
 // Delete a chat and stop its docker container.
-app.delete('/chats/:id', (req: Request, res: Response) => {
+app.delete('/chats/:id', async (req: Request, res: Response) => {
   const { id, chat } = getChat(req.params.id);
   try {
-    chat.stop_docker();
+    await chat.stop_docker();
   } finally {
     chats.delete(id);
   }
