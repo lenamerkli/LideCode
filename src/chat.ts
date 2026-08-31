@@ -214,6 +214,14 @@ export class Chat {
           if (this._waiting_for_tool_response == 0 && !this._generation_cancelled) {
             this.generate()
           }
+        }).catch((error: unknown) => {
+          this._waiting_for_tool_response--
+          const message = error instanceof Error ? error.message : String(error)
+          console.error('Unexpected error executing tool call: ' + message)
+          this._conversation.messages.push(new ToolMessage(tool_call.id, 'Error executing tool `' + tool_call.function.name + '`: ' + message))
+          if (this._waiting_for_tool_response == 0 && !this._generation_cancelled) {
+            this.generate()
+          }
         })
       }
     }).catch((error: unknown) => {
@@ -239,9 +247,21 @@ export class Chat {
 
   async call_tool(tool_call: ToolCall): Promise<void> {
     const tool_name = tool_call.function.name
-    const args: Record<string, unknown> = JSON.parse(tool_call.function.arguments)
-    const runner = this._tool_runners[tool_name]
-    const result = runner ? await runner(args) : 'Error: `' + tool_name + '` is not a valid tool.'
+    let result: string
+    try {
+      let args: Record<string, unknown>
+      try {
+        args = JSON.parse(tool_call.function.arguments)
+      } catch (error: unknown) {
+        throw new Error('Failed to parse tool arguments: ' + (error instanceof Error ? error.message : String(error)))
+      }
+      const runner = this._tool_runners[tool_name]
+      result = runner ? await runner(args) : 'Error: `' + tool_name + '` is not a valid tool.'
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error)
+      result = 'Error executing tool `' + tool_name + '`: ' + message
+      console.error('Tool call failed (' + tool_name + '): ' + message)
+    }
     this._conversation.messages.push(new ToolMessage(tool_call.id, result))
   }
 

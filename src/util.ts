@@ -3,7 +3,7 @@
 export async function getRequest(url: string): Promise<string> {
     const response = await fetch(url, { method: 'GET' });
     if (!response.ok) {
-        throw new Error('Request failed: ' + response.status + ' ' + response.statusText);
+        throw new Error('Request failed: ' + response.status + ' ' + response.statusText + ': ' + (await response.text()));
     }
     return response.text();
 }
