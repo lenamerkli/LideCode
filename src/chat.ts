@@ -2,7 +2,7 @@ import {
   AssistantMessage,
   Conversation,
   ImageContent,
-  Model,
+  Model, SystemMessage,
   TextContent,
   ToolCall, ToolMessage,
   UserMessage
@@ -118,7 +118,7 @@ export class Chat {
     if (model.supports_vision) {
       this._tools.push(VIEWIMAGE_TOOL)
     }
-    this._conversation = new Conversation([new AssistantMessage(build_system_prompt(model, project_name, this._tools))])
+    this._conversation = new Conversation([new SystemMessage(build_system_prompt(model, project_name, this._tools))])
   }
 
   async ensure_docker_image(): Promise<void> {
@@ -153,7 +153,7 @@ export class Chat {
     await this.ensure_docker_image()
     await this.ensure_docker_network()
     this._access_token = await getOrCreateAccessToken()
-    const args = ['run', '-d', '--name', this._container_name, '--network', NETWORK_NAME, '--ip', this._ip, '-e', 'ACCESS_TOKEN=' + this._access_token]
+    const args = ['run', '-d', '--name', this._container_name, '--network', NETWORK_NAME, '--ip', this._ip, '-e', 'ACCESS_TOKEN=' + this._access_token, '-e', 'PROJECT_NAME=' + this._project_name]
     if (additional_volumes) {
       for (const [host, container] of additional_volumes) {
         args.push('-v', host + ':' + container)

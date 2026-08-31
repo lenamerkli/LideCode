@@ -399,7 +399,7 @@ export class ToolMessage {
   toJSON(): Record<string, unknown> {
     return {
       role: "tool",
-      tool_call_id: this.toolCallId,
+      toolCallId: this.toolCallId,
       content: this.content,
     };
   }

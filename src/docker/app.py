@@ -1,6 +1,5 @@
 import base64
 import mimetypes
-import json
 import os
 import subprocess
 from pathlib import Path
@@ -9,6 +8,12 @@ from secrets import compare_digest
 
 
 ACCESS_TOKEN = os.environ.get('ACCESS_TOKEN')
+PROJECT_NAME = os.environ.get('PROJECT_NAME')
+
+
+if PROJECT_NAME:
+    project_path = Path('/home/agent/' + PROJECT_NAME)  # is a directory
+    project_path.mkdir(parents=True, exist_ok=True)
 
 
 app = Flask(__name__)
