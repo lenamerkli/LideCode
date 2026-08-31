@@ -12,9 +12,9 @@ import {DEFAULT_TOOLS, Tool, VIEWIMAGE_TOOL, WEBSEARCH_TOOL} from "./tool_defini
 import {build_system_prompt} from "./prompts.js";
 import {LLM, get_llm, GenerationHandle} from "./llm.js";
 import {join} from "node:path";
-import {chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync} from "node:fs";
+import {chmod, mkdir, readFile, writeFile} from "node:fs/promises";
 import {randomBytes} from "node:crypto";
-import {getRequestWithHeaders, getRequest, postRequest} from "./util.js";
+import {getRequestWithHeaders, postRequest} from "./util.js";
 
 export const IMAGE_NAME = 'lidecode_debian_13'
 export const CONTAINER_PREFIX = 'lidecode_'
@@ -47,15 +47,36 @@ function run(command: string, args: string[], options?: {timeout?: number}): Pro
 }
 
 
-export function getOrCreateAccessToken(): string {
-  mkdirSync(TOKEN_DIR, { recursive: true });
-  if (existsSync(TOKEN_FILE)) {
-    return readFileSync(TOKEN_FILE, "utf8").trim();
+export async function getOrCreateAccessToken(): Promise<string> {
+  await mkdir(TOKEN_DIR, { recursive: true });
+  try {
+    return (await readFile(TOKEN_FILE, "utf8")).trim();
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw error;
+    }
   }
   const token = `sk-${randomBytes(32).toString("hex")}`;
-  writeFileSync(TOKEN_FILE, token, { encoding: "utf8", mode: 0o600 });
-  chmodSync(TOKEN_FILE, 0o600);
+  await writeFile(TOKEN_FILE, token, { encoding: "utf8", mode: 0o600 });
+  await chmod(TOKEN_FILE, 0o600);
   return token;
+}
+
+
+/**
+ * Remove leftover LideCode containers from previous runs, e.g. when the
+ * server was shut down without deleting its chats.
+ */
+export async function cleanup_stale_containers(): Promise<void> {
+  const stdout = await run('docker', ['ps', '-aq', '--filter', 'name=' + CONTAINER_PREFIX]);
+  const ids = stdout.split('\n').map((id) => id.trim()).filter((id) => id.length > 0);
+  if (ids.length === 0) {
+    return;
+  }
+  console.log(`Cleaning up ${ids.length} leftover Docker container(s)...`);
+  await run('docker', ['stop', ...ids])
+  await run('docker', ['rm', ...ids])
+  console.log('Leftover Docker containers removed');
 }
 
 
@@ -73,6 +94,7 @@ export class Chat {
   private _generation_error: string | undefined
   private _waiting_for_tool_response: number = 0
   private _cost: number = 0
+  private _access_token: string | undefined
   private _tool_runners: Record<string, (args: Record<string, unknown>) => Promise<string>> = {
     'bash': this.execute_bash.bind(this),
     'read_file': this.execute_read_file.bind(this),
@@ -130,7 +152,8 @@ export class Chat {
     await this.stop_docker()
     await this.ensure_docker_image()
     await this.ensure_docker_network()
-    const args = ['run', '-d', '--name', this._container_name, '--network', NETWORK_NAME, '--ip', this._ip, '-e', 'ACCESS_TOKEN=' + getOrCreateAccessToken()]
+    this._access_token = await getOrCreateAccessToken()
+    const args = ['run', '-d', '--name', this._container_name, '--network', NETWORK_NAME, '--ip', this._ip, '-e', 'ACCESS_TOKEN=' + this._access_token]
     if (additional_volumes) {
       for (const [host, container] of additional_volumes) {
         args.push('-v', host + ':' + container)
@@ -147,10 +170,19 @@ export class Chat {
     console.log('Docker container ' + this._container_name + ' started');
   }
 
+  /**
+   * Resolve the sandbox access token once and return the Authorization header
+   * required by the Flask app running inside the Docker container.
+   */
+  private async auth_headers(): Promise<Record<string, string>> {
+    this._access_token ??= await getOrCreateAccessToken()
+    return { 'Authorization': 'Bearer ' + this._access_token }
+  }
+
   async check_health(): Promise<boolean> {
     let returns = false
     try{
-      const response = await getRequest('http://' + this._ip + ':' + INTERNAL_PORT + '/')
+      const response = await getRequestWithHeaders('http://' + this._ip + ':' + INTERNAL_PORT + '/', await this.auth_headers())
       returns = JSON.parse(response).status === 'ok'
     } catch (e) {}
     return returns
@@ -237,7 +269,7 @@ export class Chat {
       return 'The parameter "max_chars" must be a number'
     }
     const max_chars: number = typeof args.max_chars === "number" ? args.max_chars : 1000000
-    const raw_response = await postRequest('http://' + this._ip + ':' + INTERNAL_PORT + '/bash', {command: command, timeout: timeout, directory: directory, venv: venv, max_chars: max_chars})
+    const raw_response = await postRequest('http://' + this._ip + ':' + INTERNAL_PORT + '/bash', {command: command, timeout: timeout, directory: directory, venv: venv, max_chars: max_chars}, await this.auth_headers())
     const response = JSON.parse(raw_response)
     if (response.error) {
       return response.error
@@ -280,7 +312,7 @@ export class Chat {
       return 'The parameter "max_chars" must be a number'
     }
     const max_chars: number = typeof args.max_chars === "number" ? args.max_chars : 1000000
-    const raw_response = await postRequest('http://' + this._ip + ':' + INTERNAL_PORT + '/read_file', {path: path, start_line: start_line, end_line: end_line, start_char: start_char, end_char: end_char, max_chars: max_chars})
+    const raw_response = await postRequest('http://' + this._ip + ':' + INTERNAL_PORT + '/read_file', {path: path, start_line: start_line, end_line: end_line, start_char: start_char, end_char: end_char, max_chars: max_chars}, await this.auth_headers())
     const response = JSON.parse(raw_response)
     if (response.error) {
       return response.error
@@ -303,7 +335,7 @@ export class Chat {
       return 'The parameter "content" must be a string'
     }
     const content: string = args.content
-    const raw_response = await postRequest('http://' + this._ip + ':' + INTERNAL_PORT + '/write_to_file', {path: path, content: content})
+    const raw_response = await postRequest('http://' + this._ip + ':' + INTERNAL_PORT + '/write_to_file', {path: path, content: content}, await this.auth_headers())
     const response = JSON.parse(raw_response)
     if (response.error) {
       return response.error
@@ -337,7 +369,7 @@ export class Chat {
       return 'The parameter "read" must be a boolean'
     }
     const read: boolean = typeof args.read === "boolean" ? args.read : false
-    const raw_response = await postRequest('http://' + this._ip + ':' + INTERNAL_PORT + '/replace_in_file', {path: path, search: search, replace: replace, read: read})
+    const raw_response = await postRequest('http://' + this._ip + ':' + INTERNAL_PORT + '/replace_in_file', {path: path, search: search, replace: replace, read: read}, await this.auth_headers())
     const response = JSON.parse(raw_response)
     if (response.error) {
       return response.error
@@ -371,7 +403,7 @@ export class Chat {
       return 'The parameter "path" must be a string'
     }
     const path: string = args.path
-    const raw_response = await postRequest('http://' + this._ip + ':' + INTERNAL_PORT + '/view_image', {path: path})
+    const raw_response = await postRequest('http://' + this._ip + ':' + INTERNAL_PORT + '/view_image', {path: path}, await this.auth_headers())
     const response = JSON.parse(raw_response)
     if (response.error) {
       return response.error

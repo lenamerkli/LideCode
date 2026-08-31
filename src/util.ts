@@ -16,14 +16,14 @@ export async function getRequestWithHeaders(url: string, headers: Record<string,
     return response.text();
 }
 
-export async function postRequest(url: string, json: unknown): Promise<string> {
+export async function postRequest(url: string, json: unknown, headers?: Record<string, string>): Promise<string> {
     const response = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...headers },
         body: JSON.stringify(json)
     });
     if (!response.ok) {
-        throw new Error('Request failed: ' + response.status + ' ' + response.statusText);
+        throw new Error('Request failed: ' + response.status + ' ' + response.statusText + ': ' + (await response.text()));
     }
     return response.text();
 }

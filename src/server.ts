@@ -3,7 +3,7 @@ import express, { NextFunction, Request, Response } from 'express';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { Chat } from './chat.js';
+import { Chat, cleanup_stale_containers } from './chat.js';
 import { MODELS } from './models.js';
 import { Model } from './types.js';
 
@@ -205,6 +205,13 @@ app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
 
 
 // Start the server
-app.listen(PORT, () => {
-  console.log(`Server is running at http://localhost:${PORT}`);
-});
+(async () => {
+  try {
+    await cleanup_stale_containers();
+  } catch (error: unknown) {
+    console.warn('Failed to clean up leftover Docker containers: ' + (error instanceof Error ? error.message : String(error)));
+  }
+  app.listen(PORT, () => {
+    console.log(`Server is running at http://localhost:${PORT}`);
+  });
+})();
