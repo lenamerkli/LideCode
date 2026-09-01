@@ -1,3 +1,9 @@
+export interface ExternalTool {
+  definition: Tool;
+  url: string;
+  headers?: Record<string, string>;
+}
+
 export interface ToolParameterProperty {
   type: string;
   description?: string;

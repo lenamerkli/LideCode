@@ -8,7 +8,7 @@ import {
   UserMessage
 } from "./types.js";
 import {execFile} from "node:child_process";
-import {DEFAULT_TOOLS, Tool, VIEWIMAGE_TOOL, WEBSEARCH_TOOL} from "./tool_definitions.js";
+import {DEFAULT_TOOLS, ExternalTool, Tool, VIEWIMAGE_TOOL, WEBSEARCH_TOOL} from "./tool_definitions.js";
 import {build_system_prompt} from "./prompts.js";
 import {LLM, get_llm, GenerationHandle} from "./llm.js";
 import {join} from "node:path";
@@ -103,8 +103,9 @@ export class Chat {
     'view_image': this.execute_view_image.bind(this),
     'websearch': this.execute_websearch.bind(this)
   }
+  private readonly _external_tools: Record<string, ExternalTool> = {}
 
-  constructor(model: Model, temperature: number | undefined, project_name: string) {
+  constructor(model: Model, temperature: number | undefined, project_name: string, external_tools: ExternalTool[]) {
     this._model = model
     this._llm = get_llm(model, temperature)
     this._temperature = temperature
@@ -112,6 +113,10 @@ export class Chat {
     this._ip= CONTAINER_IP_PREFIX + Math.floor(Math.random() * 254 + 1).toString()
     this._container_name = CONTAINER_PREFIX + this._ip.split('.').pop()
     this._tools = DEFAULT_TOOLS
+    this._tools.push(...external_tools.map(tool => tool.definition))
+    for (const external_tool of external_tools) {
+      this._external_tools[external_tool.definition.function.name] = external_tool
+    }
     if (process.env.BRAVE_SEARCH_API_KEY) {
       this._tools.push(WEBSEARCH_TOOL)
     }
@@ -255,8 +260,16 @@ export class Chat {
       } catch (error: unknown) {
         throw new Error('Failed to parse tool arguments: ' + (error instanceof Error ? error.message : String(error)))
       }
-      const runner = this._tool_runners[tool_name]
-      result = runner ? await runner(args) : 'Error: `' + tool_name + '` is not a valid tool.'
+      // if the tool is an external tool, send to the url and return the text response
+      const data = {name: tool_name, args: args, access_token: this._access_token, ip: this._ip, container: this._container_name, project: this._project_name, model: this._model}
+      const external_tool = this._external_tools[tool_name]
+      if (external_tool) {
+        result = await postRequest(external_tool.url, data, external_tool.headers)
+      } else {
+      // else
+        const runner = this._tool_runners[tool_name]
+        result = runner ? await runner(args) : 'Error: `' + tool_name + '` is not a valid tool.'
+      }
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error)
       result = 'Error executing tool `' + tool_name + '`: ' + message

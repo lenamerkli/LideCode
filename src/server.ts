@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path';
 import { Chat, cleanup_stale_containers } from './chat.js';
 import { MODELS } from './models.js';
 import { Model } from './types.js';
+import { DEFAULT_TOOLS, ExternalTool, Tool, ToolParameters, VIEWIMAGE_TOOL, WEBSEARCH_TOOL } from './tool_definitions.js';
 
 // Load variables from .env into process.env before anything reads them.
 dotenv.config();
@@ -39,6 +40,100 @@ function requireString(body: Record<string, unknown>, field: string): string {
     throw new ApiError(400, `The field "${field}" is required and must be a non-empty string`);
   }
   return value;
+}
+
+/**
+ * Parse the optional "external_tools" field of the request body. Returns an
+ * empty array when the field is absent. Throws an ApiError(400) when present
+ * but malformed, so that typos in tool definitions fail fast instead of
+ * silently producing tools the model cannot call.
+ */
+function parseExternalTools(body: Record<string, unknown>): ExternalTool[] {
+  const value = body['external_tools'];
+  if (value === undefined) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    throw new ApiError(400, 'The field "external_tools" must be an array of {definition, url, headers?} objects');
+  }
+  const external_tools: ExternalTool[] = [];
+  const names = new Set<string>();
+  for (const [index, entry] of value.entries()) {
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+      throw new ApiError(400, `external_tools[${index}] must be an object`);
+    }
+    const external = entry as Record<string, unknown>;
+    if (typeof external['url'] !== 'string' || external['url'].length === 0) {
+      throw new ApiError(400, `external_tools[${index}].url is required and must be a non-empty string`);
+    }
+    const definition = external['definition'];
+    if (typeof definition !== 'object' || definition === null || Array.isArray(definition)) {
+      throw new ApiError(400, `external_tools[${index}].definition is required and must be an object`);
+    }
+    const def = definition as Record<string, unknown>;
+    if (def['type'] !== 'function') {
+      throw new ApiError(400, `external_tools[${index}].definition.type must be "function"`);
+    }
+    const fn = def['function'];
+    if (typeof fn !== 'object' || fn === null || Array.isArray(fn)) {
+      throw new ApiError(400, `external_tools[${index}].definition.function is required and must be an object`);
+    }
+    const fun = fn as Record<string, unknown>;
+    if (typeof fun['name'] !== 'string' || fun['name'].length === 0) {
+      throw new ApiError(400, `external_tools[${index}].definition.function.name is required and must be a non-empty string`);
+    }
+    if (typeof fun['description'] !== 'string' || fun['description'].length === 0) {
+      throw new ApiError(400, `external_tools[${index}].definition.function.description is required and must be a non-empty string`);
+    }
+    const parameters = fun['parameters'];
+    if (typeof parameters !== 'object' || parameters === null || Array.isArray(parameters)) {
+      throw new ApiError(400, `external_tools[${index}].definition.function.parameters must be an object with type "object" and a "properties" object`);
+    }
+    const params = parameters as Record<string, unknown>;
+    if (params['type'] !== 'object' || typeof params['properties'] !== 'object'
+      || params['properties'] === null || Array.isArray(params['properties'])) {
+      throw new ApiError(400, `external_tools[${index}].definition.function.parameters must be an object with type "object" and a "properties" object`);
+    }
+    if (params['required'] !== undefined
+      && (!Array.isArray(params['required']) || !params['required'].every((part: unknown) => typeof part === 'string'))) {
+      throw new ApiError(400, `external_tools[${index}].definition.function.parameters.required must be an array of strings`);
+    }
+    if (names.has(fun['name'])) {
+      throw new ApiError(400, `The tool name "${fun['name']}" appears more than once in external_tools`);
+    }
+    if (DEFAULT_TOOLS.some((tool) => tool.function.name === fun['name'])
+      || fun['name'] === WEBSEARCH_TOOL.function.name || fun['name'] === VIEWIMAGE_TOOL.function.name) {
+      throw new ApiError(400, `The tool name "${fun['name']}" conflicts with a built-in tool`);
+    }
+    const tool: Tool = {
+      type: 'function',
+      function: {
+        name: fun['name'],
+        description: fun['description'],
+        parameters: {
+          type: 'object',
+          properties: params['properties'] as ToolParameters['properties'],
+        }
+      }
+    };
+    if (params['required'] !== undefined) {
+      tool.function.parameters.required = params['required'] as string[];
+    }
+    let headers: Record<string, string> | undefined = undefined;
+    if (external['headers'] !== undefined) {
+      if (typeof external['headers'] !== 'object' || external['headers'] === null || Array.isArray(external['headers'])
+        || !Object.values(external['headers']).every((part) => typeof part === 'string')) {
+        throw new ApiError(400, `external_tools[${index}].headers must be an object mapping strings to strings`);
+      }
+      headers = external['headers'] as Record<string, string>;
+    }
+    const external_tool: ExternalTool = {url: external['url'], definition: tool};
+    if (headers !== undefined) {
+      external_tool.headers = headers;
+    }
+    external_tools.push(external_tool);
+  }
+  return external_tools;
 }
 
 function getChat(id: string | string[] | undefined): { id: string, chat: Chat } {
@@ -119,7 +214,7 @@ app.post('/chats', async (req: Request, res: Response) => {
   }
 
   const id = randomUUID();
-  const chat = new Chat(model, temperature, projectName);
+  const chat = new Chat(model, temperature, projectName, parseExternalTools(body));
   try {
     await chat.start_docker(volumes, env);
   } catch (error: unknown) {
