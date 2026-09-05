@@ -2,7 +2,7 @@
 
 # Allow Python version to be overridden via environment variable
 LIDECODE_PYTHON_VERSION="${LIDECODE_PYTHON_VERSION:-/usr/bin/python3}"
-LIDECODE_PYTHON_SCRIPT="/opt/lidecode/minecraft_source_extractor.py"
+LIDECODE_PYTHON_SCRIPT="/opt/lidecode/webpage_to_markdown.py"
 
 # Execute
 "$LIDECODE_PYTHON_VERSION" "$LIDECODE_PYTHON_SCRIPT" "$@"

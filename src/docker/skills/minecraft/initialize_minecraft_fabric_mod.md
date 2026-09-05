@@ -3,9 +3,7 @@ The `initialize_minecraft_fabric_mod` tool creates a fully pre-configured  Fabri
 
 ## Usage
 ```bash
-~/software/initialize_minecraft_fabric_mod --version 1.21.4 \
-    --name "My Mod" --modid mymod --package com.mymod \
-    --output-dir ./my-mod
+/home/agent/scripts/initialize_minecraft_fabric_mod --version 1.21.4 --name "My Mod" --modid mymod --package com.mymod --output-dir ./my-mod
 ```
 
 This creates a project at `./my-mod/mymod/` with:
@@ -41,7 +39,7 @@ cd mymod
 
 ## Listing Supported Versions
 ```bash
-~/software/initialize_minecraft_fabric_mod --list-versions
+/home/agent/scripts/initialize_minecraft_fabric_mod --list-versions
 ```
 
 ## Key Options

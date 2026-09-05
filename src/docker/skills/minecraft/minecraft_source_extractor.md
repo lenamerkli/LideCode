@@ -1,29 +1,29 @@
 # Extract Minecraft Source Code
-The `minecraft_source_extractor` tool downloads Minecraft JARs from Mojang, de-obfuscates (for 1.x) or decompiles (for 26.x) using Fabric Loom's `genSources` task (Vineflower decompiler), and extracts the full Java source tree to `~/minecraft_source/{version}`.
+The `minecraft_source_extractor` tool downloads Minecraft JARs from Mojang, de-obfuscates (for 1.x) or decompiles (for 26.x) using Fabric Loom's `genSources` task (Vineflower decompiler), and extracts the full Java source tree to `/home/agent/minecraft_source/{version}`.
 
 ## Usage
 ```bash
-~/software/minecraft_source_extractor --version 1.21.4
-~/software/minecraft_source_extractor --version 26.2
+/home/agent/scripts/minecraft_source_extractor --version 1.21.4
+/home/agent/scripts/minecraft_source_extractor --version 26.2
 ```
 
 ## Custom Output Directory
-By default sources land in `~/minecraft_source/{version}`. Use `--output-dir` to change the parent directory:
+By default sources land in `/home/agent/minecraft_source/{version}`. Use `--output-dir` to change the parent directory:
 ```bash
-~/software/minecraft_source_extractor --version 1.20.1 --output-dir /custom/path
+/home/agent/scripts/minecraft_source_extractor --version 1.20.1 --output-dir /custom/path
 ```
 
 ## Listing Supported Versions
 ```bash
-~/software/minecraft_source_extractor --list-versions
+/home/agent/scripts/minecraft_source_extractor --list-versions
 ```
 
 ## Key Options
-| Option            | Description                                                            |
-|-------------------|------------------------------------------------------------------------|
-| `--version`       | Minecraft full release version (e.g. 1.21.4, 26.2)                     |
-| `--output-dir`    | Parent directory for extracted sources (default: `~/minecraft_source`) |
-| `--list-versions` | List all supported Minecraft versions and exit                         |
+| Option            | Description                                                                      |
+|-------------------|----------------------------------------------------------------------------------|
+| `--version`       | Minecraft full release version (e.g. 1.21.4, 26.2)                               |
+| `--output-dir`    | Parent directory for extracted sources (default: `/home/agent/minecraft_source`) |
+| `--list-versions` | List all supported Minecraft versions and exit                                   |
 
 ## Supported Versions
 Minecraft full releases from **1.20.0** through **26.2**.

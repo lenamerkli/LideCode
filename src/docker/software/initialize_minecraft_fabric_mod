@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # Allow Python version to be overridden via environment variable
-THETACODE_PYTHON_VERSION="${THETACODE_PYTHON_VERSION:-/usr/bin/python3}"
-THETACODE_PYTHON_SCRIPT="/opt/thetacode/initialize_minecraft_fabric_mod.py"
+LIDECODE_PYTHON_VERSION="${LIDECODE_PYTHON_VERSION:-/usr/bin/python3}"
+LIDECODE_PYTHON_SCRIPT="/opt/lidecode/initialize_minecraft_fabric_mod.py"
 
 # Execute
-"$THETACODE_PYTHON_VERSION" "$THETACODE_PYTHON_SCRIPT" "$@"
+"$LIDECODE_PYTHON_VERSION" "$LIDECODE_PYTHON_SCRIPT" "$@"

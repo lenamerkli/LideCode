@@ -3,7 +3,7 @@ The `decompile_minecraft_fabric_mod` tool decompiles a Fabric mod JAR into reada
 
 ## Usage
 ```bash
-~/software/decompile_minecraft_fabric_mod mod.jar
+/home/agent/scripts/decompile_minecraft_fabric_mod mod.jar
 ```
 
 This detects the Minecraft version from the mod's `fabric.mod.json` and decompiles the JAR into a `decompiled_mod/` directory.
@@ -11,17 +11,17 @@ This detects the Minecraft version from the mod's `fabric.mod.json` and decompil
 ## Specifying the Version and Output
 If the version cannot be auto-detected (or you want to override it), use `-v`/`--version`. Use `-o`/`--output` to choose the output directory:
 ```bash
-~/software/decompile_minecraft_fabric_mod mod.jar -v 1.21.4 -o ./decompiled
+/home/agent/scripts/decompile_minecraft_fabric_mod mod.jar -v 1.21.4 -o ./decompiled
 ```
 
 ## Auto-Detecting the Version
 ```bash
-~/software/decompile_minecraft_fabric_mod mod.jar --auto-detect
+/home/agent/scripts/decompile_minecraft_fabric_mod mod.jar --auto-detect
 ```
 
 ## Listing Supported Versions
 ```bash
-~/software/decompile_minecraft_fabric_mod --list
+/home/agent/scripts/decompile_minecraft_fabric_mod --list
 ```
 
 ## Key Options

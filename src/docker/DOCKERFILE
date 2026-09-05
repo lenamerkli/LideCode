@@ -10,5 +10,8 @@ RUN echo 'PermitRootLogin yes' >> /etc/ssh/sshd_config && echo 'PasswordAuthenti
 WORKDIR /opt
 COPY app.py /opt/app.py
 COPY entrypoint.sh /opt/entrypoint.sh
+COPY skills/ /home/agent/skills/
+COPY software/ /home/agent/scripts/
+COPY opt/ /opt/lidecode/
 RUN chmod +x /opt/entrypoint.sh
 CMD ["/bin/bash", "/opt/entrypoint.sh"]
