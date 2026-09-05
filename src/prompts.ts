@@ -56,7 +56,7 @@ export function build_system_prompt(model: Model, project_name: string, tools: T
 
 function format_tool_call(tool_call: ToolCall, model: Model): string {
   let call = '';
-  if (model._tech_name.includes("deepseek") && model._tech_name.includes("v4")) {
+  if (model.tech_name.includes("deepseek") && model.tech_name.includes("v4")) {
     call += "<｜DSML｜tool_calls>\n"
     call += "<｜DSML｜invoke name=\"" + tool_call.name + "\">\n"
     for (const key of Object.keys(tool_call.arguments)) {
@@ -68,6 +68,51 @@ function format_tool_call(tool_call: ToolCall, model: Model): string {
     }
     call += "</｜DSML｜invoke>\n"
     call += "</｜DSML｜tool_calls>\n"
+  } else if ((model.tech_name.includes('glm') && model.tech_name.includes('5.')) || (model.tech_name.includes("laguna") && model.tech_name.includes("2.1"))) {
+    call += "<tool_call>" + tool_call.name + "\n"
+    for (const key of Object.keys(tool_call.arguments)) {
+      call += "<arg_key>" + key + "</arg_key><arg_value>" + tool_call.arguments[key] + "</arg_value>\n"
+    }
+    call += "</tool_call>\n"
+  } else if (model.tech_name.includes('qwen') && model.tech_name.includes('3.8')) {
+    call += "<tool_call>\n"
+    call += "<function=" + tool_call.name + ">\n"
+    for (const key of Object.keys(tool_call.arguments)) {
+      call += "<parameter=" + key + ">\n" + tool_call.arguments[key] + "\n</parameter>\n"
+    }
+    call += "</function>\n</tool_call>"
+  } else if (model.tech_name.includes('kimi') && model.tech_name.includes('k3')) {
+    call += "<|open|>tools<|sep|>"
+    call += "<|open|>call tool=\"" + tool_call.name + "\" index=\"1\"<|sep|>"
+    for (const key of Object.keys(tool_call.arguments)) {
+      const val = tool_call.arguments[key];
+      let type = 'string';
+      let valStr = '';
+      if (typeof val === 'string') {
+        type = 'string';
+        valStr = val;
+      } else if (typeof val === 'number') {
+        type = 'number';
+        valStr = String(val);
+      } else if (typeof val === 'boolean') {
+        type = 'boolean';
+        valStr = String(val);
+      } else if (val === null) {
+        type = 'null';
+        valStr = 'null';
+      } else if (Array.isArray(val)) {
+        type = 'array';
+        valStr = JSON.stringify(val);
+      } else if (typeof val === 'object') {
+        type = 'object';
+        valStr = JSON.stringify(val);
+      } else {
+        valStr = String(val);
+      }
+      call += "<|open|>argument key=\"" + key + "\" type=\"" + type + "\"<|sep|>" + valStr + "<|close|>argument<|sep|>"
+    }
+    call += "<|close|>call<|sep|>"
+    call += "<|close|>tools<|sep|>\n"
   } else {
     call += "<tool_call>\n"
     call += "<name>" + tool_call.name + "</name>\n"
