@@ -213,8 +213,16 @@ app.post('/chats', async (req: Request, res: Response) => {
     env = body['env'] as Record<string, string>;
   }
 
+  let allowWeb = true;
+  if (body['allow_web'] !== undefined) {
+    if (typeof body['allow_web'] !== 'boolean') {
+      throw new ApiError(400, 'The field "allow_web" must be a boolean');
+    }
+    allowWeb = body['allow_web'];
+  }
+
   const id = randomUUID();
-  const chat = new Chat(model, temperature, projectName, parseExternalTools(body));
+  const chat = new Chat(model, temperature, projectName, parseExternalTools(body), allowWeb);
   try {
     await chat.start_docker(volumes, env);
   } catch (error: unknown) {

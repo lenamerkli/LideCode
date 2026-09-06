@@ -1,7 +1,13 @@
 import argparse
 import asyncio
+import os
 import sys
 from crawl4ai import AsyncWebCrawler
+
+
+def web_disabled() -> bool:
+    """Return True when web access is disabled via the ALLOW_WEB environment variable."""
+    return os.environ.get('ALLOW_WEB', 'true').strip().lower() in ('false', '0', 'no')
 
 
 async def crawl(url: str, output: str | None = None) -> None:
@@ -34,6 +40,9 @@ def parse_args():
 
 
 def main():
+    if web_disabled():
+        print("Error: web access is disabled for this session (ALLOW_WEB is false).", file=sys.stderr)
+        sys.exit(1)
     args = parse_args()
     try:
         asyncio.run(crawl(args.url, args.output))

@@ -21,6 +21,11 @@ export const CONTAINER_PREFIX = 'lidecode_'
 export const INTERNAL_PORT = 50000
 export const NETWORK_NAME = 'lidecode_net'
 export const CONTAINER_IP_PREFIX = '172.30.1.'
+// Environment variable used inside the container to enable/disable web access.
+export const ALLOW_WEB_ENV = 'ALLOW_WEB'
+// Web-related skill and script hidden from the agent when web access is disabled.
+export const WEB_SKILLS_DIR = '/home/agent/skills/web/'
+export const WEB_SCRIPT_PATH = '/home/agent/scripts/webpage_to_markdown'
 const TOKEN_DIR = "/opt/LideCode";
 const TOKEN_FILE = join(TOKEN_DIR, "access_token");
 
@@ -95,6 +100,7 @@ export class Chat {
   private _waiting_for_tool_response: number = 0
   private _cost: number = 0
   private _access_token: string | undefined
+  private readonly _allow_web: boolean
   private _tool_runners: Record<string, (args: Record<string, unknown>) => Promise<string>> = {
     'bash': this.execute_bash.bind(this),
     'read_file': this.execute_read_file.bind(this),
@@ -105,11 +111,12 @@ export class Chat {
   }
   private readonly _external_tools: Record<string, ExternalTool> = {}
 
-  constructor(model: Model, temperature: number | undefined, project_name: string, external_tools: ExternalTool[]) {
+  constructor(model: Model, temperature: number | undefined, project_name: string, external_tools: ExternalTool[], allow_web: boolean) {
     this._model = model
     this._llm = get_llm(model, temperature)
     this._temperature = temperature
     this._project_name = project_name
+    this._allow_web = allow_web
     this._ip= CONTAINER_IP_PREFIX + Math.floor(Math.random() * 254 + 1).toString()
     this._container_name = CONTAINER_PREFIX + this._ip.split('.').pop()
     this._tools = DEFAULT_TOOLS
@@ -117,7 +124,7 @@ export class Chat {
     for (const external_tool of external_tools) {
       this._external_tools[external_tool.definition.function.name] = external_tool
     }
-    if (process.env.BRAVE_SEARCH_API_KEY) {
+    if (process.env.BRAVE_SEARCH_API_KEY && this._allow_web) {
       this._tools.push(WEBSEARCH_TOOL)
     }
     if (model.supports_vision) {
@@ -158,7 +165,7 @@ export class Chat {
     await this.ensure_docker_image()
     await this.ensure_docker_network()
     this._access_token = await getOrCreateAccessToken()
-    const args = ['run', '-d', '--name', this._container_name, '--network', NETWORK_NAME, '--ip', this._ip, '-e', 'ACCESS_TOKEN=' + this._access_token, '-e', 'PROJECT_NAME=' + this._project_name]
+    const args = ['run', '-d', '--name', this._container_name, '--network', NETWORK_NAME, '--ip', this._ip, '-e', 'ACCESS_TOKEN=' + this._access_token, '-e', 'PROJECT_NAME=' + this._project_name, '-e', ALLOW_WEB_ENV + '=' + (this._allow_web ? 'true' : 'false')]
     if (additional_volumes) {
       for (const [host, container] of additional_volumes) {
         args.push('-v', host + ':' + container)
@@ -227,7 +234,11 @@ export class Chat {
     }
     const skills = await this.fetch_container_listing('/skills', 'skills')
     const scripts = await this.fetch_container_listing('/scripts', 'scripts')
-    this._conversation.messages[0] = new SystemMessage(build_system_prompt(this._model, this._project_name, this._tools, skills, scripts))
+    this._conversation.messages[0] = new SystemMessage(build_system_prompt(
+      this._model, this._project_name, this._tools,
+      this._allow_web ? skills : skills.filter((skill) => !skill.startsWith(WEB_SKILLS_DIR)),
+      this._allow_web ? scripts : scripts.filter((script) => script !== WEB_SCRIPT_PATH),
+    ))
   }
 
   send_user_message(message: string): void {
@@ -484,6 +495,9 @@ export class Chat {
   }
 
   async execute_websearch(args: Record<string, unknown>): Promise<string> {
+    if (!this._allow_web) {
+      return 'Web search is not available: web access is disabled for this session.'
+    }
     if (!process.env.BRAVE_SEARCH_API_KEY) {
       return 'Web search is not available: no BRAVE_SEARCH_API_KEY is configured.'
     }

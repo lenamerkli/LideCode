@@ -9,6 +9,10 @@ from secrets import compare_digest
 
 ACCESS_TOKEN = os.environ.get('ACCESS_TOKEN')
 PROJECT_NAME = os.environ.get('PROJECT_NAME')
+# Web access is disabled when ALLOW_WEB is set to a falsy value.
+ALLOW_WEB = os.environ.get('ALLOW_WEB', 'true').strip().lower() not in ('false', '0', 'no')
+WEB_SKILLS_DIR = Path('/home/agent/skills/web')
+WEB_SCRIPT_PATH = Path('/home/agent/scripts/webpage_to_markdown')
 
 
 if PROJECT_NAME:
@@ -207,7 +211,8 @@ def skills():
     try:
         if not skills_path.exists():
             return {'error': f'Skills directory not found: {skills_path}'}, 404
-        array = sorted(str(path) for path in skills_path.rglob('*') if path.is_file())
+        array = sorted(str(path) for path in skills_path.rglob('*')
+                       if path.is_file() and (ALLOW_WEB or not path.is_relative_to(WEB_SKILLS_DIR)))
         return {'skills': array}
     except Exception as e:
         return {'error': str(e)}, 500
@@ -219,7 +224,8 @@ def scripts():
     try:
         if not scripts_path.exists():
             return {'error': f'Scripts directory not found: {scripts_path}'}, 404
-        array = sorted(str(path) for path in scripts_path.rglob('*') if path.is_file())
+        array = sorted(str(path) for path in scripts_path.rglob('*')
+                       if path.is_file() and (ALLOW_WEB or path != WEB_SCRIPT_PATH))
         return {'scripts': array}
     except Exception as e:
         return {'error': str(e)}, 500
