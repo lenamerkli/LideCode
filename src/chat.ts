@@ -173,6 +173,7 @@ export class Chat {
     console.log('Starting Docker container ' + this._container_name + '...');
     await run('docker', args)
     console.log('Docker container ' + this._container_name + ' started');
+    await this.load_skills_and_scripts()
   }
 
   /**
@@ -191,6 +192,42 @@ export class Chat {
       returns = JSON.parse(response).status === 'ok'
     } catch (e) {}
     return returns
+  }
+
+  /**
+   * Fetch a file listing (absolute paths) from one of the listing endpoints of
+   * the Flask app inside the container ('/skills' or '/scripts'). Returns an
+   * empty array when the endpoint fails, e.g. when the directory does not
+   * exist inside the container.
+   */
+  private async fetch_container_listing(endpoint: string, key: string): Promise<string[]> {
+    try {
+      const raw_response = await getRequestWithHeaders('http://' + this._ip + ':' + INTERNAL_PORT + endpoint, await this.auth_headers())
+      const response = JSON.parse(raw_response)
+      const items = response[key]
+      return Array.isArray(items) ? items.filter((item: unknown) => typeof item === 'string') : []
+    } catch (error: unknown) {
+      console.error('Failed to fetch ' + endpoint + ' from the container: ' + (error instanceof Error ? error.message : String(error)))
+      return []
+    }
+  }
+
+  /**
+   * Rebuild the system prompt with the skills and scripts that exist inside
+   * the Docker container. Called after the container is started; waits for the
+   * Flask app inside the container to come up first, so the listings do not
+   * fail on a container that is still booting.
+   */
+  async load_skills_and_scripts(): Promise<void> {
+    for (let attempt = 0; attempt < 20; attempt++) {
+      if (await this.check_health()) {
+        break
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500))
+    }
+    const skills = await this.fetch_container_listing('/skills', 'skills')
+    const scripts = await this.fetch_container_listing('/scripts', 'scripts')
+    this._conversation.messages[0] = new SystemMessage(build_system_prompt(this._model, this._project_name, this._tools, skills, scripts))
   }
 
   send_user_message(message: string): void {

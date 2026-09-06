@@ -8,7 +8,7 @@ interface ToolCall {
 }
 
 
-export function build_system_prompt(model: Model, project_name: string, tools: Tool[]): string {
+export function build_system_prompt(model: Model, project_name: string, tools: Tool[], skills: string[] = [], scripts: string[] = []): string {
   let prompt = "# Introduction\nYou are an expert coding assistant operating inside LideCode, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files. You are running inside a docker container. The project that you are working on is at `/home/agent/%%project_name%%`.\n"
   prompt = prompt.replace("%%project_name%%", project_name)
   prompt += "# Tool Calling\nTool Calling is very important to accomplish most tasks.\n"
@@ -51,7 +51,20 @@ export function build_system_prompt(model: Model, project_name: string, tools: T
         break
     }
   }
-  //
+  if (skills.length > 0){
+    prompt += "# Skills\nSkills contain instructions on how to use the available scripts and wide variety of examples.\n```\n"
+    for (const skill of skills) {
+      prompt += skill + "\n"
+    }
+    prompt += "```\n"
+  }
+  if (scripts.length > 0){
+    prompt += "# Script\nThere are scripts available that can be executed.\n```\n"
+    for (const script of scripts) {
+      prompt += script + "\n"
+    }
+    prompt += "```\n"
+  }
   return prompt
 }
 
