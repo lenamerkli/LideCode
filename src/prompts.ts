@@ -55,7 +55,7 @@ export function build_system_prompt(model: Model, project_name: string, tools: T
     }
   }
   if (tools_prompt_ext) {
-    prompt += tools_prompt_ext
+    prompt += render_tool_call_placeholders(tools_prompt_ext, model)
   }
   if (skills.length > 0){
     prompt += "# Skills\nSkills contain instructions on how to use the available scripts and wide variety of examples.\n```\n"
@@ -72,6 +72,78 @@ export function build_system_prompt(model: Model, project_name: string, tools: T
     prompt += "```\n"
   }
   return prompt
+}
+
+// Renders %%format_tool_call:NAME:{...json arguments...}%% placeholders in the given
+// text by replacing each one with the model-specific rendering produced by
+// format_tool_call. Placeholders with malformed JSON, a missing terminator ("%%")
+// or an invalid tool name are left untouched so that problems remain visible
+// instead of silently corrupting the prompt or throwing.
+function render_tool_call_placeholders(text: string, model: Model): string {
+  const marker = "%%format_tool_call:"
+  let result = ''
+  let i = 0
+  while (i < text.length) {
+    const start = text.indexOf(marker, i)
+    if (start === -1) {
+      result += text.slice(i)
+      break
+    }
+    const nameStart = start + marker.length
+    const nameEnd = text.indexOf(":", nameStart)
+    if (nameEnd === -1 || text[nameEnd + 1] !== "{" || !/^[A-Za-z0-9_.-]+$/.test(text.slice(nameStart, nameEnd))) {
+      // Not a well-formed placeholder: copy through the marker and keep scanning.
+      result += text.slice(i, nameStart)
+      i = nameStart
+      continue
+    }
+    // Find the closing brace of the JSON body, tracking brace depth and skipping
+    // over braces that appear inside JSON strings.
+    let depth = 0
+    let inString = false
+    let escaped = false
+    let bodyEnd = -1
+    for (let j = nameEnd + 1; j < text.length; j++) {
+      const ch = text[j]
+      if (inString) {
+        if (escaped) {
+          escaped = false
+        } else if (ch === "\\") {
+          escaped = true
+        } else if (ch === "\"") {
+          inString = false
+        }
+        continue
+      }
+      if (ch === "\"") {
+        inString = true
+      } else if (ch === "{") {
+        depth++
+      } else if (ch === "}") {
+        depth--
+        if (depth === 0) {
+          bodyEnd = j
+          break
+        }
+      }
+    }
+    if (bodyEnd === -1 || text.slice(bodyEnd + 1, bodyEnd + 3) !== "%%") {
+      result += text.slice(i, nameStart)
+      i = nameStart
+      continue
+    }
+    result += text.slice(i, start)
+    const body = text.slice(nameEnd + 1, bodyEnd + 1)
+    try {
+      const arguments_ = JSON.parse(body) as Record<string, unknown>
+      result += format_tool_call({name: text.slice(nameStart, nameEnd), arguments: arguments_}, model)
+    } catch {
+      // Invalid JSON: keep the placeholder as-is.
+      result += text.slice(start, bodyEnd + 3)
+    }
+    i = bodyEnd + 3
+  }
+  return result
 }
 
 function format_tool_call(tool_call: ToolCall, model: Model): string {
