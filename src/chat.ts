@@ -101,6 +101,8 @@ export class Chat {
   private _cost: number = 0
   private _access_token: string | undefined
   private readonly _allow_web: boolean
+  private readonly _system_prompt_ext: string | undefined
+  private readonly _tools_prompt_ext: string | undefined
   private _tool_runners: Record<string, (args: Record<string, unknown>) => Promise<string>> = {
     'bash': this.execute_bash.bind(this),
     'read_file': this.execute_read_file.bind(this),
@@ -111,12 +113,14 @@ export class Chat {
   }
   private readonly _external_tools: Record<string, ExternalTool> = {}
 
-  constructor(model: Model, temperature: number | undefined, project_name: string, external_tools: ExternalTool[], allow_web: boolean) {
+  constructor(model: Model, temperature: number | undefined, project_name: string, external_tools: ExternalTool[], allow_web: boolean, system_prompt_ext: string | undefined, tools_prompt_ext: string | undefined) {
     this._model = model
     this._llm = get_llm(model, temperature)
     this._temperature = temperature
     this._project_name = project_name
     this._allow_web = allow_web
+    this._system_prompt_ext = system_prompt_ext
+    this._tools_prompt_ext = tools_prompt_ext
     this._ip= CONTAINER_IP_PREFIX + Math.floor(Math.random() * 254 + 1).toString()
     this._container_name = CONTAINER_PREFIX + this._ip.split('.').pop()
     this._tools = DEFAULT_TOOLS
@@ -130,7 +134,7 @@ export class Chat {
     if (model.supports_vision) {
       this._tools.push(VIEWIMAGE_TOOL)
     }
-    this._conversation = new Conversation([new SystemMessage(build_system_prompt(model, project_name, this._tools))])
+    this._conversation = new Conversation([new SystemMessage(build_system_prompt(model, project_name, this._tools, [], [], this._system_prompt_ext, this._tools_prompt_ext))])
   }
 
   async ensure_docker_image(): Promise<void> {
@@ -238,6 +242,8 @@ export class Chat {
       this._model, this._project_name, this._tools,
       this._allow_web ? skills : skills.filter((skill) => !skill.startsWith(WEB_SKILLS_DIR)),
       this._allow_web ? scripts : scripts.filter((script) => script !== WEB_SCRIPT_PATH),
+      this._system_prompt_ext,
+      this._tools_prompt_ext
     ))
   }
 

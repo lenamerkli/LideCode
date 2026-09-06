@@ -221,8 +221,24 @@ app.post('/chats', async (req: Request, res: Response) => {
     allowWeb = body['allow_web'];
   }
 
+  let systemPromptExt: string | undefined = undefined;
+  if (body['system_prompt_ext'] !== undefined) {
+    if (typeof body['system_prompt_ext'] !== 'string' || body['system_prompt_ext'].length === 0) {
+      throw new ApiError(400, 'The field "system_prompt_ext" must be a non-empty string');
+    }
+    systemPromptExt = body['system_prompt_ext'];
+  }
+
+  let toolsPromptExt: string | undefined = undefined;
+  if (body['tools_prompt_ext'] !== undefined) {
+    if (typeof body['tools_prompt_ext'] !== 'string' || body['tools_prompt_ext'].length === 0) {
+      throw new ApiError(400, 'The field "tools_prompt_ext" must be a non-empty string');
+    }
+    toolsPromptExt = body['tools_prompt_ext'];
+  }
+
   const id = randomUUID();
-  const chat = new Chat(model, temperature, projectName, parseExternalTools(body), allowWeb);
+  const chat = new Chat(model, temperature, projectName, parseExternalTools(body), allowWeb, systemPromptExt, toolsPromptExt);
   try {
     await chat.start_docker(volumes, env);
   } catch (error: unknown) {
