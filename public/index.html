@@ -20,6 +20,7 @@
   .msg.user { align-self: flex-end; background: #3b82f6; color: #fff; }
   .msg.assistant { align-self: flex-start; background: #fff; border: 1px solid #e5e7eb; }
   .msg.error { align-self: center; background: #fee2e2; color: #991b1b; border: 1px solid #fca5a5; }
+  .msg.thinking { opacity: .65; font-style: italic; }
   .msg .meta { display: block; font-size: .7rem; opacity: .6; margin-bottom: .25rem; }
   form { display: flex; gap: .5rem; padding: .8rem; background: #fff; border-top: 1px solid #e5e7eb; }
   #input { flex: 1; resize: none; height: 3.2em; }
@@ -49,6 +50,9 @@ const messagesEl = $('messages'), statusEl = $('status');
 
 let chatId = null;
 let pollTimer = null;
+let stream = null;        // EventSource for the current chat
+let liveText = null;      // live assistant bubble while streaming
+let liveThinking = null;  // live reasoning bubble while streaming
 
 function setStatus(text) { statusEl.textContent = text; }
 
@@ -98,6 +102,7 @@ async function loadModels() {
 }
 
 function renderState(state) {
+  clearLive();
   messagesEl.innerHTML = '';
   for (const m of state.messages) {
     if (m.role === 'system') continue;
@@ -119,6 +124,126 @@ function renderState(state) {
   setStatus('id ' + state.id.slice(0, 8) + ' · ' + state.model + ' · cost ' + (state.cost ?? 0));
 }
 
+function clearLive() {
+  if (liveText) { liveText.remove(); liveText = null; }
+  if (liveThinking) { liveThinking.remove(); liveThinking = null; }
+}
+
+function liveBubble(kind) {
+  if (kind === 'thinking') {
+    if (!liveThinking) {
+      liveThinking = addMessage('assistant', '');
+      liveThinking.classList.add('thinking');
+      liveThinking.querySelector('.meta').textContent = 'thinking';
+    }
+    return liveThinking;
+  }
+  if (!liveText) {
+    liveText = addMessage('assistant', '');
+  }
+  return liveText;
+}
+
+function appendDelta(kind, delta) {
+  const el = liveBubble(kind);
+  el.lastChild.textContent += delta;
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+// Subscribe to the server-sent events stream of the chat. Closing the
+// EventSource at any time only stops the client from listening — the
+// server keeps generating independently.
+function connectStream(id) {
+  if (stream) { stream.close(); stream = null; }
+  clearTimeout(pollTimer);
+  pollTimer = null;
+  const es = new EventSource('/chats/' + id + '/stream');
+  stream = es;
+
+  es.addEventListener('snapshot', (event) => {
+    const data = JSON.parse(event.data);
+    api('/chats/' + id).then((state) => {
+      renderState(state);
+      setBusy(!state.finished);
+    }).catch(() => {});
+    // Catch up on anything streamed before we connected.
+    if (data.generation) {
+      if (data.generation.thinking) appendDelta('thinking', data.generation.thinking);
+      if (data.generation.text) appendDelta('text', data.generation.text);
+    }
+    if (data.error) addMessage('error', 'Error: ' + data.error);
+  });
+
+  es.addEventListener('generation_started', () => {
+    clearLive();
+    setBusy(true);
+  });
+
+  es.addEventListener('thinking', (event) => {
+    appendDelta('thinking', JSON.parse(event.data).delta);
+  });
+
+  es.addEventListener('text', (event) => {
+    appendDelta('text', JSON.parse(event.data).delta);
+  });
+
+  es.addEventListener('generation_finished', (event) => {
+    const data = JSON.parse(event.data);
+    clearLive();
+    if (data.tool_calls && data.tool_calls.length) {
+      addMessage('assistant', '[tool calls] ' + data.tool_calls.map((c) => c.name + '(' + c.arguments + ')').join(', '));
+    }
+  });
+
+  es.addEventListener('tool_started', (event) => {
+    setBusy(true);
+    setStatus('running tool ' + JSON.parse(event.data).name);
+  });
+
+  es.addEventListener('tool_finished', (event) => {
+    const data = JSON.parse(event.data);
+    addMessage('assistant', '[tool result] ' + data.name + ' finished');
+  });
+
+  es.addEventListener('turn_finished', () => {
+    clearLive();
+    api('/chats/' + id).then((state) => {
+      renderState(state);
+      setBusy(false);
+    }).catch(() => {});
+  });
+
+  es.addEventListener('error', (event) => {
+    // Native connection errors carry no `data`; those are handled by onerror.
+    if (!event.data) return;
+    addMessage('error', 'Error: ' + JSON.parse(event.data).message);
+  });
+
+  es.addEventListener('closed', () => {
+    // The chat was deleted on the server.
+    es.close();
+    if (stream === es) stream = null;
+    setStatus('chat closed');
+    setBusy(false);
+  });
+
+  es.onerror = () => {
+    if (es.readyState === EventSource.CLOSED) {
+      // Server unreachable or chat gone: fall back to polling.
+      if (stream === es) stream = null;
+      if (chatId === id) startPolling();
+    }
+    // Otherwise EventSource reconnects automatically and we get a new snapshot.
+  };
+}
+
+// Fallback when the event stream is unavailable (e.g. a proxy that breaks SSE).
+function startPolling() {
+  if (pollTimer || !chatId) return;
+  setStatus('Stream unavailable, falling back to polling');
+  poll();
+}
+
 async function poll() {
   if (!chatId) return;
   try {
@@ -127,24 +252,20 @@ async function poll() {
     if (!state.finished) {
       const gen = await api('/chats/' + chatId + '/generation');
       if (gen.available && !gen.isDone && gen.text) {
-        let live = $('live');
-        if (!live) {
-          live = addMessage('assistant', '');
-          live.id = 'live';
-        }
-        live.lastChild.textContent = gen.text;
+        liveBubble('text').lastChild.textContent = gen.text;
         messagesEl.scrollTop = messagesEl.scrollHeight;
       }
       setBusy(true);
       pollTimer = setTimeout(poll, 700);
     } else {
-      const live = $('live');
-      if (live) live.removeAttribute('id');
+      clearLive();
       setBusy(false);
+      pollTimer = null;
     }
   } catch (err) {
     setStatus('Poll failed: ' + err.message);
     setBusy(false);
+    pollTimer = null;
   }
 }
 
@@ -163,6 +284,7 @@ async function createChat() {
     addMessage('assistant', 'Chat created (' + data.model + '). Container is starting…');
     setStatus('id ' + chatId.slice(0, 8));
     setBusy(false);
+    connectStream(chatId);
   } catch (err) {
     addMessage('error', 'Create chat failed: ' + err.message);
   }
@@ -177,7 +299,10 @@ $('delete').addEventListener('click', async () => {
   if (!chatId) return;
   const id = chatId;
   chatId = null;
+  if (stream) { stream.close(); stream = null; }
   clearTimeout(pollTimer);
+  pollTimer = null;
+  clearLive();
   messagesEl.innerHTML = '';
   setStatus('deleted');
   setBusy(true);
@@ -199,7 +324,8 @@ $('composer').addEventListener('submit', async (event) => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message: text }),
     });
-    poll();
+    // The response arrives via the event stream; poll only as a fallback.
+    if (!stream) poll();
   } catch (err) {
     addMessage('error', 'Send failed: ' + err.message);
     setBusy(false);

@@ -30,6 +30,22 @@ const TOKEN_DIR = "/opt/LideCode";
 const TOKEN_FILE = join(TOKEN_DIR, "access_token");
 
 /**
+ * Events emitted by a `Chat` for the entire duration of a user turn. A turn
+ * spans one or more generation streams plus the tool executions between
+ * them. Subscribing is purely observational: it never influences the turn.
+ */
+export type ChatEvent =
+  | { type: 'generation_started' }
+  | { type: 'thinking'; delta: string }
+  | { type: 'text'; delta: string }
+  | { type: 'generation_finished'; finish_reason: string | null; tool_calls: { id: string; name: string; arguments: string }[] }
+  | { type: 'tool_started'; id: string; name: string }
+  | { type: 'tool_finished'; id: string; name: string }
+  | { type: 'turn_finished' }
+  | { type: 'error'; message: string }
+  | { type: 'closed' };
+
+/**
  * Run a command asynchronously without a shell, passing arguments as an array
  * so that no shell interpretation (and therefore no command injection) can
  * occur. Resolves with stdout, rejects on non-zero exit or timeout.
@@ -112,6 +128,7 @@ export class Chat {
     'websearch': this.execute_websearch.bind(this)
   }
   private readonly _external_tools: Record<string, ExternalTool> = {}
+  private _listeners: Set<(event: ChatEvent) => void> = new Set()
 
   constructor(model: Model, temperature: number | undefined, project_name: string, external_tools: ExternalTool[], allow_web: boolean, system_prompt_ext: string | undefined, tools_prompt_ext: string | undefined) {
     this._model = model
@@ -262,19 +279,42 @@ export class Chat {
     this._generation_handle = handle
     this._generation_cancelled = false
     this._generation_error = undefined
+    this._emit({type: 'generation_started'})
+    // Forward the stream deltas of this generation to chat listeners. The
+    // subscription is purely observational and removed once the `done`
+    // promise settles; error reporting happens in the catch below.
+    const unsubscribe = handle.subscribe((event) => {
+      if (event.type === 'thinking' || event.type === 'text') {
+        this._emit(event)
+      } else if (event.type === 'done') {
+        this._emit({
+          type: 'generation_finished',
+          finish_reason: event.message.finishReason,
+          tool_calls: event.message.toolCalls.map((call) => ({
+            id: call.id,
+            name: call.function.name,
+            arguments: call.function.arguments,
+          })),
+        })
+      }
+    })
     handle.done.then((generation_result) => {
+      unsubscribe()
       this._generation_handle = undefined
       this._conversation.messages.push(generation_result.message)
       this._cost += generation_result.cost ?? 0
       for (const tool_call of generation_result.message.toolCalls) {
         this._waiting_for_tool_response++
+        this._emit({type: 'tool_started', id: tool_call.id, name: tool_call.function.name})
         this.call_tool(tool_call).then(() => {
           this._waiting_for_tool_response--
+          this._emit({type: 'tool_finished', id: tool_call.id, name: tool_call.function.name})
           if (this._waiting_for_tool_response == 0 && !this._generation_cancelled) {
             this.generate()
           }
         }).catch((error: unknown) => {
           this._waiting_for_tool_response--
+          this._emit({type: 'tool_finished', id: tool_call.id, name: tool_call.function.name})
           const message = error instanceof Error ? error.message : String(error)
           console.error('Unexpected error executing tool call: ' + message)
           this._conversation.messages.push(new ToolMessage(tool_call.id, 'Error executing tool `' + tool_call.function.name + '`: ' + message))
@@ -283,11 +323,18 @@ export class Chat {
           }
         })
       }
+      // A response without tool calls ends the turn right here.
+      if (generation_result.message.toolCalls.length == 0) {
+        this._emit({type: 'turn_finished'})
+      }
     }).catch((error: unknown) => {
+      unsubscribe()
       this._generation_handle = undefined
       if (!this._generation_cancelled) {
         this._generation_error = error instanceof Error ? error.message : String(error)
+        this._emit({type: 'error', message: this._generation_error})
       }
+      this._emit({type: 'turn_finished'})
     })
   }
 
@@ -301,7 +348,40 @@ export class Chat {
       handle.done.catch(() => {})
       // Suppress the automatic follow-up generation once pending tool calls finish.
       this._generation_cancelled = true
+      this._emit({type: 'turn_finished'})
     }
+  }
+
+  /**
+   * Register an observational listener for chat events. Returns an
+   * unsubscribe function. Disconnecting a listener never affects any
+   * running generation or tool execution.
+   */
+  subscribe(listener: (event: ChatEvent) => void): () => void {
+    this._listeners.add(listener)
+    return () => {
+      this._listeners.delete(listener)
+    }
+  }
+
+  private _emit(event: ChatEvent): void {
+    for (const listener of [...this._listeners]) {
+      try {
+        listener(event)
+      } catch (error: unknown) {
+        console.error('Chat event listener failed: ' + (error instanceof Error ? error.message : String(error)))
+      }
+    }
+  }
+
+  /**
+   * Notify all listeners that the chat is being deleted, then drop them.
+   * Any running generation and its docker container are unaffected; use
+   * `cancel_generation()` first to stop generation.
+   */
+  close(): void {
+    this._emit({type: 'closed'})
+    this._listeners.clear()
   }
 
   async call_tool(tool_call: ToolCall): Promise<void> {

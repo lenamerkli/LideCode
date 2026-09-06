@@ -9,6 +9,16 @@ import {OpenRouter} from "@openrouter/sdk";
  * results via the `done` promise (assembled `AssistantMessage` plus the
  * cost in credits reported by OpenRouter in the final stream chunk).
  */
+/**
+ * Events emitted by a `GenerationHandle` while the generation runs.
+ * Subscribing is purely observational: it never influences the stream.
+ */
+export type GenerationEvent =
+  | { type: 'thinking'; delta: string }
+  | { type: 'text'; delta: string }
+  | { type: 'done'; message: AssistantMessage; cost: number | undefined }
+  | { type: 'error'; message: string };
+
 export interface GenerationHandle {
   /** Current state of the streamed (visible) tokens. Grows while running. */
   readonly text: string;
@@ -25,6 +35,13 @@ export interface GenerationHandle {
    * an abort error. Safe to call multiple times and after completion.
    */
   cancel(): void;
+
+  /**
+   * Register a listener for incremental stream events. Returns an
+   * unsubscribe function. Listeners are removed automatically once the
+   * generation finishes, but calling the unsubscribe function early is safe.
+   */
+  subscribe(listener: (event: GenerationEvent) => void): () => void;
 }
 
 export interface GenerationResult {
@@ -99,6 +116,21 @@ export class OpenRouterLLM extends LLM {
     let refusal: string | null = null;
     let finished = false;
 
+    // Observational listeners for incremental stream events. Iterating over a
+    // copy so listeners may unsubscribe from within their own callback, and
+    // swallowing listener errors so a broken subscriber can never disturb
+    // the generation itself.
+    const listeners = new Set<(event: GenerationEvent) => void>();
+    const emit = (event: GenerationEvent): void => {
+      for (const listener of [...listeners]) {
+        try {
+          listener(event);
+        } catch (error: unknown) {
+          console.warn('Generation event listener failed: ' + (error instanceof Error ? error.message : String(error)));
+        }
+      }
+    };
+
     // Tool-call fragments, accumulated per tool-call index.
     const toolCallFragments = new Map<number, {id?: string | undefined; name: string; args: string}>();
 
@@ -148,9 +180,11 @@ export class OpenRouterLLM extends LLM {
           if (delta) {
             if (typeof delta.reasoning === "string") {
               thinking += delta.reasoning;
+              emit({type: 'thinking', delta: delta.reasoning});
             }
             if (typeof delta.content === "string") {
               text += delta.content;
+              emit({type: 'text', delta: delta.content});
             }
             if (typeof delta.refusal === "string") {
               refusal = (refusal ?? "") + delta.refusal;
@@ -192,6 +226,7 @@ export class OpenRouterLLM extends LLM {
         finishReason,
       );
 
+      emit({type: 'done', message, cost: usage?.cost ?? undefined});
       return {
         message,
         cost: usage?.cost ?? undefined,
@@ -200,7 +235,10 @@ export class OpenRouterLLM extends LLM {
     })();
 
     // Mark finished even if the stream loop rejects.
-    done.catch(() => { finished = true; });
+    done.catch((error: unknown) => {
+      finished = true;
+      emit({type: 'error', message: error instanceof Error ? error.message : String(error)});
+    });
 
     return {
       get text() { return text; },
@@ -208,6 +246,12 @@ export class OpenRouterLLM extends LLM {
       get isDone() { return finished; },
       done,
       cancel() { abort_controller.abort(); },
+      subscribe(listener: (event: GenerationEvent) => void) {
+        listeners.add(listener);
+        return () => {
+          listeners.delete(listener);
+        };
+      },
     };
   }
 }

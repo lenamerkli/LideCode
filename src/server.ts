@@ -297,6 +297,69 @@ app.get('/chats/:id/generation', (req: Request, res: Response) => {
   });
 });
 
+// Server-Sent Events stream of the current turn. Purely observational:
+// a client may close the connection at any time without affecting the
+// running generation — disconnecting only removes the listener. Use
+// POST /chats/:id/cancel to actually stop a generation.
+app.get('/chats/:id/stream', (req: Request, res: Response) => {
+  const { chat } = getChat(req.params.id);
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+
+  let closed = false;
+  const send = (event: string, data: unknown) => {
+    if (closed) {
+      return;
+    }
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  };
+  const cleanup = () => {
+    if (closed) {
+      return;
+    }
+    closed = true;
+    clearInterval(heartbeat);
+    unsubscribe();
+  };
+
+  // Snapshot so a client connecting mid-generation can catch up instantly.
+  const handle = chat.generation_handle;
+  const snapshot: Record<string, unknown> = {
+    busy: chat.busy,
+  };
+  if (handle) {
+    snapshot['generation'] = { text: handle.text, thinking: handle.thinking, isDone: handle.isDone };
+  }
+  if (chat.error !== undefined) {
+    snapshot['error'] = chat.error;
+  }
+  send('snapshot', snapshot);
+
+  // Keep the connection alive through proxies that time out idle streams.
+  const heartbeat = setInterval(() => {
+    if (!closed) {
+      res.write(': ping\n\n');
+    }
+  }, 20_000);
+
+  const unsubscribe = chat.subscribe((event) => {
+    if (event.type === 'closed') {
+      // The chat was deleted; end the stream cleanly.
+      send('closed', {});
+      res.end();
+      cleanup();
+      return;
+    }
+    send(event.type, event);
+  });
+
+  res.on('close', cleanup);
+});
+
 // Cancel the current generation.
 app.post('/chats/:id/cancel', (req: Request, res: Response) => {
   const { id, chat } = getChat(req.params.id);
@@ -310,6 +373,8 @@ app.delete('/chats/:id', async (req: Request, res: Response) => {
   try {
     await chat.stop_docker();
   } finally {
+    // Ends any open SSE connections for this chat via the 'closed' event.
+    chat.close();
     chats.delete(id);
   }
   res.status(204).send();
