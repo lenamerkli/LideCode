@@ -10,6 +10,7 @@ import { IPC } from '../shared/contract.js';
 import type {
   ChatEventEnvelope,
   ChatState,
+  ChatSummary,
   CreateChatRequest,
   DockerStatus,
   GenerationInfo,
@@ -35,6 +36,8 @@ const lidecode = {
   chats: {
     create: (request: CreateChatRequest): Promise<ChatState> => invoke<ChatState>(IPC.chatsCreate, request),
     get: (id: string): Promise<ChatState> => invoke<ChatState>(IPC.chatsGet, id),
+    list: (): Promise<ChatSummary[]> => invoke<ChatSummary[]>(IPC.chatsList),
+    open: (id: string): Promise<ChatState> => invoke<ChatState>(IPC.chatsOpen, id),
     sendMessage: (id: string, request: SendMessageRequest): Promise<ChatState> =>
       invoke<ChatState>(IPC.chatsSendMessage, id, request),
     generation: (id: string): Promise<GenerationInfo> => invoke<GenerationInfo>(IPC.chatsGeneration, id),

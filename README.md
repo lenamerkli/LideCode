@@ -49,6 +49,18 @@ API keys are read from, in order of precedence:
 `.env` is git-ignored. Keys that were previously committed to this repository
 must be rotated.
 
+## Chat persistence
+
+Chats are saved automatically after every change (debounced) and flushed on
+quit, so they survive restarts. Each chat is one JSON document under
+`<userData>/chats/<id>.json` (see `src/persistence.ts`); writes go through a
+temp file plus `rename` so a partial write is never observed.
+
+Opening a saved chat only rehydrates its conversation from disk — the sandbox
+container is started **lazily**, on the next message that is sent. Deleting a
+chat removes both the in-memory chat and its file, and never fails because
+Docker is unavailable.
+
 ## Development
 
 ```bash
@@ -92,7 +104,7 @@ build-time only and is not shipped in the app.
 
 ```
 electron/   main process, preload bridge, IPC handlers, paths, settings
-src/        engine: chat, llm, prompts, tools, docker build context
+src/        engine: chat, llm, prompts, tools, persistence, docker build context
 shared/     IPC contract shared by main and renderer
 ui/         Angular workspace
 scripts/    esbuild build + smoke test runners

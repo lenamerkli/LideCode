@@ -25,6 +25,11 @@ export class TextContent {
     this._text = text;
   }
 
+  /** Rebuild a text part from its `toJSON()` representation. */
+  static fromJSON(value: Record<string, unknown>): TextContent {
+    return new TextContent(typeof value["text"] === "string" ? value["text"] : "");
+  }
+
   toString(): string {
     return `TextContent(text=${this.text})`;
   }
@@ -50,6 +55,26 @@ export class ImageContent {
 
   constructor(content: Uint8Array) {
     this._content = content;
+  }
+
+  /**
+   * Rebuild an image part from its `toJSON()` representation, decoding the
+   * `data:<mime>;base64,<payload>` URL back into raw bytes.
+   */
+  static fromJSON(value: Record<string, unknown>): ImageContent {
+    const imageUrl = value["image_url"];
+    let url = "";
+    if (typeof imageUrl === "object" && imageUrl !== null && !Array.isArray(imageUrl)) {
+      const candidate = (imageUrl as Record<string, unknown>)["url"];
+      if (typeof candidate === "string") {
+        url = candidate;
+      }
+    } else if (typeof imageUrl === "string") {
+      url = imageUrl;
+    }
+    const comma = url.indexOf(",");
+    const payload = comma === -1 ? url : url.slice(comma + 1);
+    return new ImageContent(new Uint8Array(Buffer.from(payload, "base64")));
   }
 
   toString(): string {
@@ -129,6 +154,32 @@ export type ContentPart = TextContent | ImageContent;
  */
 export type Content = string | ContentPart[];
 
+/** Rebuild a single content part from its serialized form. */
+function deserializeContentPart(value: unknown): ContentPart {
+  if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+    const part = value as Record<string, unknown>;
+    if (part["type"] === "image_url") {
+      return ImageContent.fromJSON(part);
+    }
+    if (part["type"] === "text") {
+      return TextContent.fromJSON(part);
+    }
+  }
+  // Unknown part shapes degrade to empty text rather than failing the load.
+  return new TextContent("");
+}
+
+/** Rebuild `Content` (string or content parts) from its serialized form. */
+export function deserializeContent(value: unknown): Content {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((part) => deserializeContentPart(part));
+  }
+  return "";
+}
+
 
 // ---------------------------------------------------------------------------
 // Tool calls
@@ -143,6 +194,18 @@ export class ToolCall {
     this._id = id;
     this._type = "function";
     this._function = fn;
+  }
+
+  /** Rebuild a tool call from its `toJSON()` representation. */
+  static fromJSON(value: Record<string, unknown>): ToolCall {
+    const serializedFn = value["function"];
+    const fn = typeof serializedFn === "object" && serializedFn !== null && !Array.isArray(serializedFn)
+      ? serializedFn as Record<string, unknown>
+      : {};
+    return new ToolCall(
+      typeof value["id"] === "string" ? value["id"] : "",
+      ToolCallFunction.fromJSON(fn),
+    );
   }
 
   toString(): string {
@@ -186,6 +249,14 @@ export class ToolCallFunction {
   constructor(name: string, args: string) {
     this._name = name;
     this._arguments = args;
+  }
+
+  /** Rebuild a tool-call function from its `toJSON()` representation. */
+  static fromJSON(value: Record<string, unknown>): ToolCallFunction {
+    return new ToolCallFunction(
+      typeof value["name"] === "string" ? value["name"] : "",
+      typeof value["arguments"] === "string" ? value["arguments"] : "",
+    );
   }
 
   toString(): string {
@@ -238,6 +309,11 @@ export class SystemMessage {
     this._content = content;
   }
 
+  /** Rebuild a system message from its `toJSON()` representation. */
+  static fromJSON(value: Record<string, unknown>): SystemMessage {
+    return new SystemMessage(deserializeContent(value["content"]));
+  }
+
   toString(): string {
     return `SystemMessage(content=${this.content})`;
   }
@@ -266,6 +342,14 @@ export class UserMessage {
   constructor(content: Content, name?: string | undefined) {
     this._content = content;
     this._name = name;
+  }
+
+  /** Rebuild a user message from its `toJSON()` representation. */
+  static fromJSON(value: Record<string, unknown>): UserMessage {
+    return new UserMessage(
+      deserializeContent(value["content"]),
+      typeof value["name"] === "string" ? value["name"] : undefined,
+    );
   }
 
   toString(): string {
@@ -320,6 +404,24 @@ export class AssistantMessage {
     this._reasoning = reasoning;
     this._refusal = refusal;
     this._finishReason = finishReason;
+  }
+
+  /** Rebuild an assistant message from its `toJSON()` representation. */
+  static fromJSON(value: Record<string, unknown>): AssistantMessage {
+    const rawToolCalls = value["tool_calls"];
+    const toolCalls = Array.isArray(rawToolCalls)
+      ? rawToolCalls
+          .filter((call): call is Record<string, unknown> =>
+            typeof call === "object" && call !== null && !Array.isArray(call))
+          .map((call) => ToolCall.fromJSON(call))
+      : [];
+    return new AssistantMessage(
+      typeof value["content"] === "string" ? value["content"] : null,
+      toolCalls,
+      typeof value["reasoning"] === "string" ? value["reasoning"] : null,
+      typeof value["refusal"] === "string" ? value["refusal"] : null,
+      typeof value["finish_reason"] === "string" ? value["finish_reason"] : null,
+    );
   }
 
   toString(): string {
@@ -392,6 +494,18 @@ export class ToolMessage {
     this._content = content;
   }
 
+  /**
+   * Rebuild a tool message from its serialized form. Accepts both the current
+   * `toolCallId` field and the legacy `tool_call_id` spelling.
+   */
+  static fromJSON(value: Record<string, unknown>): ToolMessage {
+    const id = value["toolCallId"] ?? value["tool_call_id"];
+    return new ToolMessage(
+      typeof id === "string" ? id : "",
+      typeof value["content"] === "string" ? value["content"] : "",
+    );
+  }
+
   toString(): string {
     return `ToolMessage(tool_call_id=${this.toolCallId}, content=${this.content})`;
   }
@@ -423,6 +537,30 @@ export class ToolMessage {
 
 export type Message = SystemMessage | UserMessage | AssistantMessage | ToolMessage;
 
+/**
+ * Rebuild a message from its serialized form, dispatching on `role`. Unknown
+ * roles are surfaced as an error so a corrupted file cannot silently drop
+ * messages from a restored conversation.
+ */
+export function deserializeMessage(value: unknown): Message {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("Cannot deserialize a message that is not an object");
+  }
+  const message = value as Record<string, unknown>;
+  switch (message["role"]) {
+    case "system":
+      return SystemMessage.fromJSON(message);
+    case "user":
+      return UserMessage.fromJSON(message);
+    case "assistant":
+      return AssistantMessage.fromJSON(message);
+    case "tool":
+      return ToolMessage.fromJSON(message);
+    default:
+      throw new Error(`Cannot deserialize a message with unknown role "${String(message["role"])}"`);
+  }
+}
+
 
 // ---------------------------------------------------------------------------
 // Conversation
@@ -433,6 +571,13 @@ export class Conversation {
 
   constructor(messages: Message[]) {
     this._messages = messages;
+  }
+
+  /** Rebuild a conversation from its `toJSON()` representation. */
+  static fromJSON(value: Record<string, unknown>): Conversation {
+    const rawMessages = value["messages"];
+    const messages = Array.isArray(rawMessages) ? rawMessages.map((message) => deserializeMessage(message)) : [];
+    return new Conversation(messages);
   }
 
   toString(): string {

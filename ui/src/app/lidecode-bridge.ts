@@ -1,6 +1,7 @@
 import type {
   ChatEventEnvelope,
   ChatState,
+  ChatSummary,
   CreateChatRequest,
   DockerStatus,
   GenerationInfo,
@@ -20,6 +21,8 @@ export interface LidecodeBridge {
   chats: {
     create(request: CreateChatRequest): Promise<ChatState>;
     get(id: string): Promise<ChatState>;
+    list(): Promise<ChatSummary[]>;
+    open(id: string): Promise<ChatState>;
     sendMessage(id: string, request: SendMessageRequest): Promise<ChatState>;
     generation(id: string): Promise<GenerationInfo>;
     cancel(id: string): Promise<ChatState>;

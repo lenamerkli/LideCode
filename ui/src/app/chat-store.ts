@@ -2,6 +2,7 @@ import { Injectable, signal } from '@angular/core';
 import type {
   ChatEvent,
   ChatState,
+  ChatSummary,
   DockerStatus,
   ModelInfo,
   SerializedMessage,
@@ -62,6 +63,7 @@ function toBubbles(messages: SerializedMessage[]): Bubble[] {
 @Injectable({ providedIn: 'root' })
 export class ChatStore {
   readonly models = signal<ModelInfo[]>([]);
+  readonly savedChats = signal<ChatSummary[]>([]);
   readonly selectedModel = signal('');
   readonly projectName = signal('test-project');
   readonly chatId = signal<string | null>(null);
@@ -80,10 +82,20 @@ export class ChatStore {
   async init(): Promise<void> {
     this.unsubscribe ??= bridge().chats.onEvent(({ chatId, event }) => this.handleEvent(chatId, event));
     void this.loadModels();
+    void this.loadSavedChats();
     try {
       this.docker.set(await bridge().docker.status());
     } catch {
       this.docker.set(null);
+    }
+  }
+
+  /** Refresh the sidebar list of chats persisted on disk. */
+  async loadSavedChats(): Promise<void> {
+    try {
+      this.savedChats.set(await bridge().chats.list());
+    } catch (error: unknown) {
+      this.status.set('Failed to load saved chats: ' + errorMessage(error));
     }
   }
 
@@ -171,6 +183,7 @@ export class ChatStore {
     }
     this.busy.set(false);
     this.stopPolling();
+    void this.loadSavedChats();
   }
 
   private startPolling(): void {
@@ -240,8 +253,26 @@ export class ChatStore {
       this.chatId.set(state.id);
       this.renderState(state);
       this.append({ kind: 'assistant', text: 'Chat created (' + state.model + '). Container is starting…' });
+      void this.loadSavedChats();
     } catch (error: unknown) {
       this.append({ kind: 'error', text: 'Create chat failed: ' + errorMessage(error) });
+    }
+  }
+
+  /** Open a chat persisted on disk; its container starts lazily on next send. */
+  async openChat(id: string): Promise<void> {
+    if (this.busy()) {
+      return;
+    }
+    this.stopPolling();
+    this.liveText.set('');
+    this.liveThinking.set('');
+    try {
+      const state = await bridge().chats.open(id);
+      this.chatId.set(state.id);
+      this.renderState(state);
+    } catch (error: unknown) {
+      this.append({ kind: 'error', text: 'Open chat failed: ' + errorMessage(error) });
     }
   }
 
@@ -275,6 +306,7 @@ export class ChatStore {
       this.status.set(errorMessage(error));
     }
     this.busy.set(false);
+    void this.loadSavedChats();
   }
 
   async send(text: string): Promise<void> {

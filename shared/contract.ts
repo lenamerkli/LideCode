@@ -11,6 +11,8 @@ export const IPC = {
   modelsList: 'models:list',
   chatsCreate: 'chats:create',
   chatsGet: 'chats:get',
+  chatsList: 'chats:list',
+  chatsOpen: 'chats:open',
   chatsSendMessage: 'chats:sendMessage',
   chatsGeneration: 'chats:generation',
   chatsCancel: 'chats:cancel',
@@ -60,6 +62,12 @@ export interface SerializedMessage {
   content?: unknown;
   tool_calls?: { id: string; type: 'function'; function: { name: string; arguments: string } }[];
   tool_call_id?: string;
+  /** Legacy camelCase tool-call id emitted by an earlier `ToolMessage.toJSON()`. */
+  toolCallId?: string;
+  name?: string;
+  reasoning?: string | null;
+  refusal?: string | null;
+  finish_reason?: string | null;
   [key: string]: unknown;
 }
 
@@ -118,6 +126,41 @@ export interface ExternalToolInput {
 export interface SendMessageRequest {
   message: string;
   generate?: boolean;
+}
+
+/**
+ * Full persisted state of a chat (one JSON file per chat under
+ * `<userData>/chats/`). Versioned so the on-disk shape can evolve.
+ */
+export interface SavedChat {
+  version: 1;
+  id: string;
+  title: string;
+  project_name: string;
+  model: string;
+  temperature?: number;
+  cost: number;
+  allow_web: boolean;
+  system_prompt_ext?: string;
+  tools_prompt_ext?: string;
+  external_tools: ExternalToolInput[];
+  volumes?: [string, string][];
+  env?: Record<string, string>;
+  messages: SerializedMessage[];
+  created_at: string;
+  updated_at: string;
+}
+
+/** Lightweight listing entry for a saved chat (no message payload). */
+export interface ChatSummary {
+  id: string;
+  title: string;
+  project_name: string;
+  model: string;
+  cost: number;
+  message_count: number;
+  created_at: string;
+  updated_at: string;
 }
 
 /** User-configurable settings, persisted in the Electron userData directory. */

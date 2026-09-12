@@ -33,6 +33,8 @@ export function registerIpc(engine: Engine): void {
   handle(IPC.modelsList, () => engine.listModels());
   handle(IPC.chatsCreate, (body: unknown) => engine.createChat(body));
   handle(IPC.chatsGet, (id: string) => engine.getState(id));
+  handle(IPC.chatsList, () => engine.listChats());
+  handle(IPC.chatsOpen, (id: string) => engine.openChat(id));
   handle(IPC.chatsSendMessage, (id: string, body: unknown) => engine.sendMessage(id, body));
   handle(IPC.chatsGeneration, (id: string) => engine.getGeneration(id));
   handle(IPC.chatsCancel, (id: string) => engine.cancel(id));

@@ -7,15 +7,16 @@
  * HTTP, Express or Electron types.
  */
 
-import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { Chat, cleanup_stale_containers } from './chat.js';
+import { deleteSavedChat, listSavedChats, loadSavedChat, saveSavedChat } from './persistence.js';
 import { MODELS } from './models.js';
 import { Model } from './types.js';
 import { DEFAULT_TOOLS, ExternalTool, Tool, ToolParameters, VIEWIMAGE_TOOL, WEBSEARCH_TOOL } from './tool_definitions.js';
 import type {
   ChatEvent,
   ChatState,
+  ChatSummary,
   DockerStatus,
   GenerationInfo,
   ModelInfo,
@@ -57,8 +58,14 @@ function probeDocker(): Promise<DockerStatus> {
 }
 
 export class Engine {
+  /** Debounce window before a changed chat is written to disk. */
+  private static readonly PERSIST_DELAY_MS = 500;
   private readonly chats = new Map<string, Chat>();
   private readonly listeners = new Set<(chatId: string, event: ChatEvent) => void>();
+  /** Timers for chats with unsaved changes, keyed by chat id. */
+  private readonly persistTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Chats awaiting a debounced save. */
+  private readonly pendingSaves = new Map<string, Chat>();
 
   /** Prepare the environment (removes leftover sandbox containers from crashes). */
   async init(): Promise<void> {
@@ -100,6 +107,94 @@ export class Engine {
         console.error('Engine event listener failed: ' + (error instanceof Error ? error.message : String(error)));
       }
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // Persistence
+  // -------------------------------------------------------------------------
+
+  /** Route a chat's change notifications into the debounced save queue. */
+  private attachPersistence(chat: Chat): void {
+    chat.onChanged = () => this.schedulePersist(chat);
+  }
+
+  private schedulePersist(chat: Chat): void {
+    this.pendingSaves.set(chat.id, chat);
+    if (this.persistTimers.has(chat.id)) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      this.persistTimers.delete(chat.id);
+      const target = this.pendingSaves.get(chat.id);
+      this.pendingSaves.delete(chat.id);
+      if (target) {
+        void this.persistChat(target);
+      }
+    }, Engine.PERSIST_DELAY_MS);
+    timer.unref();
+    this.persistTimers.set(chat.id, timer);
+  }
+
+  private cancelPendingPersist(id: string): void {
+    const timer = this.persistTimers.get(id);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      this.persistTimers.delete(id);
+    }
+    this.pendingSaves.delete(id);
+  }
+
+  private async persistChat(chat: Chat): Promise<void> {
+    try {
+      await saveSavedChat(chat.toSnapshot());
+    } catch (error: unknown) {
+      console.error(`Failed to save chat ${chat.id}: ` + (error instanceof Error ? error.message : String(error)));
+    }
+  }
+
+  /** Write every debounced-but-unsaved chat immediately (used on shutdown). */
+  private async flushPendingSaves(): Promise<void> {
+    for (const timer of this.persistTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.persistTimers.clear();
+    const chats = [...this.pendingSaves.values()];
+    this.pendingSaves.clear();
+    await Promise.all(chats.map((chat) => this.persistChat(chat)));
+  }
+
+  /** List every chat saved on disk, newest first. */
+  listChats(): Promise<ChatSummary[]> {
+    return listSavedChats();
+  }
+
+  /**
+   * Rehydrate a saved chat into memory. Cheap: it restores the conversation
+   * but does not start the sandbox container, which happens lazily on the
+   * next message. Opening an already-open chat returns it as-is.
+   */
+  async openChat(id: string): Promise<ChatState> {
+    if (typeof id !== 'string' || id.length === 0) {
+      throw new ApiError(400, 'A chat id is required');
+    }
+    const existing = this.chats.get(id);
+    if (existing) {
+      return this.chatState(id, existing);
+    }
+    const doc = await loadSavedChat(id);
+    if (doc === null) {
+      throw new ApiError(404, `No chat found for id "${id}"`);
+    }
+    let chat: Chat;
+    try {
+      chat = Chat.fromSnapshot(doc);
+    } catch (error: unknown) {
+      throw new ApiError(500, `Failed to restore chat "${id}": ${error instanceof Error ? error.message : String(error)}`);
+    }
+    this.attachPersistence(chat);
+    chat.subscribe((event) => this.emit(id, event));
+    this.chats.set(id, chat);
+    return this.chatState(id, chat);
   }
 
   private getChat(id: string): Chat {
@@ -288,16 +383,22 @@ export class Engine {
     }
 
     const externalTools = this.parseExternalTools(request);
-    const id = randomUUID();
     const chat = new Chat(model, temperature, projectName, externalTools, allowWeb, systemPromptExt, toolsPromptExt);
+    const id = chat.id;
+    this.attachPersistence(chat);
     chat.subscribe((event) => this.emit(id, event));
     try {
       await chat.start_docker(volumes, env);
     } catch (error: unknown) {
+      this.cancelPendingPersist(id);
       chat.close();
       throw new ApiError(500, `Failed to start the docker container: ${error instanceof Error ? error.message : String(error)}`);
     }
     this.chats.set(id, chat);
+    // Persist immediately so the chat exists on disk as soon as it is created;
+    // this supersedes the debounced save scheduled during container start.
+    this.cancelPendingPersist(id);
+    await this.persistChat(chat);
     return this.chatState(id, chat);
   }
 
@@ -320,7 +421,7 @@ export class Engine {
   }
 
   /** Send a user message and optionally start a generation. */
-  sendMessage(id: string, body: unknown): ChatState {
+  async sendMessage(id: string, body: unknown): Promise<ChatState> {
     const chat = this.getChat(id);
     if (!body || typeof body !== 'object' || Array.isArray(body)) {
       throw new ApiError(400, 'A JSON request body is required');
@@ -333,6 +434,12 @@ export class Engine {
         throw new ApiError(400, 'The field "generate" must be a boolean');
       }
       generate = request['generate'];
+    }
+    // Chats restored from disk start their container lazily, on first use.
+    try {
+      await chat.ensure_started();
+    } catch (error: unknown) {
+      throw new ApiError(500, `Failed to start the docker container: ${error instanceof Error ? error.message : String(error)}`);
     }
     chat.send_user_message(message);
     if (generate) {
@@ -351,20 +458,28 @@ export class Engine {
     return this.chatState(id, chat);
   }
 
-  /** Delete a chat and stop its Docker container. */
+  /** Delete a chat, stop its Docker container and remove its saved file. */
   async deleteChat(id: string): Promise<void> {
     const chat = this.getChat(id);
+    this.cancelPendingPersist(id);
     try {
       await chat.stop_docker();
+    } catch (error: unknown) {
+      // Deleting must succeed even when the container is gone or Docker is
+      // unavailable (e.g. a restored chat that never started a container).
+      console.warn(`Failed to stop the container for chat ${id}: ` + (error instanceof Error ? error.message : String(error)));
     } finally {
       // Emits the 'closed' event (ending any open streams) before dropping listeners.
       chat.close();
       this.chats.delete(id);
     }
+    await deleteSavedChat(id);
   }
 
   /** Stop every sandbox container. Called on application shutdown. */
   async shutdown(): Promise<void> {
+    // Flush debounced saves first so the last turn is not lost on quit.
+    await this.flushPendingSaves();
     const entries = [...this.chats.entries()];
     this.chats.clear();
     await Promise.all(entries.map(async ([id, chat]) => {

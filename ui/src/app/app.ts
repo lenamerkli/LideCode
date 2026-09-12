@@ -23,6 +23,11 @@ export class App implements OnInit {
     this.store.projectName.set((event.target as HTMLInputElement).value);
   }
 
+  /** Open a chat persisted on disk (its container starts on the next send). */
+  protected openChat(id: string): void {
+    void this.store.openChat(id);
+  }
+
   protected onDraftInput(event: Event): void {
     this.draft.set((event.target as HTMLTextAreaElement).value);
   }

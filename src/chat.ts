@@ -8,15 +8,25 @@ import {
   UserMessage
 } from "./types.js";
 import {execFile} from "node:child_process";
-import {DEFAULT_TOOLS, ExternalTool, Tool, VIEWIMAGE_TOOL, WEBSEARCH_TOOL} from "./tool_definitions.js";
+import {
+  DEFAULT_TOOLS,
+  ExternalTool,
+  Tool,
+  ToolParameterProperty,
+  ToolParameters,
+  VIEWIMAGE_TOOL,
+  WEBSEARCH_TOOL
+} from "./tool_definitions.js";
 import {build_system_prompt} from "./prompts.js";
 import {LLM, get_llm, GenerationHandle} from "./llm.js";
+import {MODELS} from "./models.js";
+import {deriveTitle} from "./persistence.js";
 import {join} from "node:path";
 import {chmod, mkdir, readFile, writeFile} from "node:fs/promises";
-import {randomBytes} from "node:crypto";
+import {randomBytes, randomUUID} from "node:crypto";
 import {getRequestWithHeaders, postRequest} from "./util.js";
 import {getPaths} from "./config.js";
-import type {ChatEvent} from "../shared/contract.js";
+import type {ChatEvent, ExternalToolInput, SavedChat, SerializedMessage} from "../shared/contract.js";
 
 export const IMAGE_NAME = 'lidecode_debian_13'
 export const CONTAINER_PREFIX = 'lidecode_'
@@ -90,7 +100,53 @@ export async function cleanup_stale_containers(): Promise<void> {
 }
 
 
+// ---------------------------------------------------------------------------
+// Snapshot helpers
+// ---------------------------------------------------------------------------
+
+/** Current time as an ISO-8601 string, used for chat timestamps. */
+function nowIso(): string {
+  return new Date().toISOString();
+}
+
+/** Convert an in-memory external tool into its persisted representation. */
+function externalToolToInput(tool: ExternalTool): ExternalToolInput {
+  const input: ExternalToolInput = { url: tool.url, definition: tool.definition };
+  if (tool.headers !== undefined) {
+    input.headers = tool.headers;
+  }
+  return input;
+}
+
+/** Rebuild an in-memory external tool from its persisted representation. */
+function externalToolFromInput(input: ExternalToolInput): ExternalTool {
+  const fn = input.definition.function;
+  const parameters: ToolParameters = {
+    type: "object",
+    properties: fn.parameters.properties as Record<string, ToolParameterProperty>,
+  };
+  if (fn.parameters.required !== undefined) {
+    parameters.required = fn.parameters.required;
+  }
+  const tool: ExternalTool = {
+    url: input.url,
+    definition: {
+      type: "function",
+      function: {name: fn.name, description: fn.description, parameters},
+    },
+  };
+  if (input.headers !== undefined) {
+    tool.headers = input.headers;
+  }
+  return tool;
+}
+
+
 export class Chat {
+  private _id: string
+  private _title: string
+  private _created_at: string
+  private _updated_at: string
   private _model: Model
   private _llm: LLM
   private _temperature: number | undefined
@@ -108,6 +164,11 @@ export class Chat {
   private readonly _allow_web: boolean
   private readonly _system_prompt_ext: string | undefined
   private readonly _tools_prompt_ext: string | undefined
+  private _volumes: [string, string][] | undefined
+  private _env: Record<string, string> | undefined
+  private _container_started: boolean = false
+  /** Hook invoked after any change worth persisting (set by the engine). */
+  onChanged: (() => void) | undefined
   private _tool_runners: Record<string, (args: Record<string, unknown>) => Promise<string>> = {
     'bash': this.execute_bash.bind(this),
     'read_file': this.execute_read_file.bind(this),
@@ -120,6 +181,11 @@ export class Chat {
   private _listeners: Set<(event: ChatEvent) => void> = new Set()
 
   constructor(model: Model, temperature: number | undefined, project_name: string, external_tools: ExternalTool[], allow_web: boolean, system_prompt_ext: string | undefined, tools_prompt_ext: string | undefined) {
+    const timestamp = nowIso()
+    this._id = randomUUID()
+    this._title = ''
+    this._created_at = timestamp
+    this._updated_at = timestamp
     this._model = model
     this._llm = get_llm(model, temperature)
     this._temperature = temperature
@@ -171,6 +237,7 @@ export class Chat {
       await run('docker', ['stop', this._container_name])
       await run('docker', ['rm', this._container_name])
     }
+    this._container_started = false
   }
 
   async start_docker(additional_volumes: [string, string][] | undefined, env: Record<string, string> | undefined): Promise<void> {
@@ -194,6 +261,21 @@ export class Chat {
     await run('docker', args)
     console.log('Docker container ' + this._container_name + ' started');
     await this.load_skills_and_scripts()
+    this._volumes = additional_volumes
+    this._env = env
+    this._container_started = true
+  }
+
+  /**
+   * Start the sandbox container if it is not running yet. Chats restored from
+   * disk intentionally start lazily: opening a saved chat only rehydrates its
+   * conversation, and the container is created on the first new turn.
+   */
+  async ensure_started(): Promise<void> {
+    if (this._container_started) {
+      return
+    }
+    await this.start_docker(this._volumes, this._env)
   }
 
   /**
@@ -254,10 +336,12 @@ export class Chat {
       this._system_prompt_ext,
       this._tools_prompt_ext
     ))
+    this._notifyChanged()
   }
 
   send_user_message(message: string): void {
     this._conversation.messages.push(new UserMessage([new TextContent(message)]))
+    this._notifyChanged()
   }
 
   generate(): void {
@@ -295,6 +379,7 @@ export class Chat {
       this._generation_handle = undefined
       this._conversation.messages.push(generation_result.message)
       this._cost += generation_result.cost ?? 0
+      this._notifyChanged()
       for (const tool_call of generation_result.message.toolCalls) {
         this._waiting_for_tool_response++
         this._emit({type: 'tool_started', id: tool_call.id, name: tool_call.function.name})
@@ -310,6 +395,7 @@ export class Chat {
           const message = error instanceof Error ? error.message : String(error)
           console.error('Unexpected error executing tool call: ' + message)
           this._conversation.messages.push(new ToolMessage(tool_call.id, 'Error executing tool `' + tool_call.function.name + '`: ' + message))
+          this._notifyChanged()
           if (this._waiting_for_tool_response == 0 && !this._generation_cancelled) {
             this.generate()
           }
@@ -402,6 +488,7 @@ export class Chat {
       console.error('Tool call failed (' + tool_name + '): ' + message)
     }
     this._conversation.messages.push(new ToolMessage(tool_call.id, result))
+    this._notifyChanged()
   }
 
   async execute_bash(args: Record<string, unknown>): Promise<string> {
@@ -667,6 +754,94 @@ export class Chat {
       output += '</result>\n'
     }
     return output
+  }
+
+  /** Serialize the conversation into its persisted message form. */
+  private serializeMessages(): SerializedMessage[] {
+    return this._conversation.messages.map((message) => message.toJSON() as SerializedMessage)
+  }
+
+  /** Mark the chat as dirty and let the engine schedule a save. */
+  private _notifyChanged(): void {
+    this._updated_at = nowIso()
+    this.onChanged?.()
+  }
+
+  /**
+   * Capture the full state of this chat for persistence. Transient fields
+   * (listeners, generation handles, the random container IP) are never included.
+   */
+  toSnapshot(): SavedChat {
+    const messages = this.serializeMessages()
+    const doc: SavedChat = {
+      version: 1,
+      id: this._id,
+      title: this._title.length > 0 ? this._title : deriveTitle(messages),
+      project_name: this._project_name,
+      model: this._model.name,
+      cost: this._cost,
+      allow_web: this._allow_web,
+      external_tools: Object.values(this._external_tools).map((tool) => externalToolToInput(tool)),
+      messages,
+      created_at: this._created_at,
+      updated_at: this._updated_at,
+    }
+    if (this._temperature !== undefined) {
+      doc.temperature = this._temperature
+    }
+    if (this._system_prompt_ext !== undefined) {
+      doc.system_prompt_ext = this._system_prompt_ext
+    }
+    if (this._tools_prompt_ext !== undefined) {
+      doc.tools_prompt_ext = this._tools_prompt_ext
+    }
+    if (this._volumes !== undefined) {
+      doc.volumes = this._volumes
+    }
+    if (this._env !== undefined) {
+      doc.env = this._env
+    }
+    return doc
+  }
+
+  /**
+   * Rebuild a chat from a persisted document. The conversation is restored
+   * verbatim; the sandbox container is *not* started, so opening a saved chat
+   * is cheap (see `ensure_started`).
+   */
+  static fromSnapshot(doc: SavedChat): Chat {
+    const model = MODELS.find((candidate) => candidate.name === doc.model)
+    if (!model) {
+      throw new Error(`Cannot restore a chat using unknown model "${doc.model}"`)
+    }
+    const chat = new Chat(
+      model,
+      doc.temperature,
+      doc.project_name,
+      doc.external_tools.map((input) => externalToolFromInput(input)),
+      doc.allow_web,
+      doc.system_prompt_ext,
+      doc.tools_prompt_ext,
+    )
+    chat._id = doc.id
+    chat._title = doc.title
+    chat._created_at = doc.created_at
+    chat._updated_at = doc.updated_at
+    chat._cost = doc.cost
+    chat._volumes = doc.volumes
+    chat._env = doc.env
+    chat._conversation = Conversation.fromJSON({ messages: doc.messages })
+    return chat
+  }
+
+  /** Stable identifier used as the chat's key and file name. */
+  get id(): string {
+    return this._id
+  }
+
+  /** Display title (derived from the first user message when not set). */
+  get title(): string {
+    return this._title.length > 0 ? this._title : deriveTitle(this.serializeMessages())
   }
 
   get model(): Model {

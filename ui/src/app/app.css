@@ -22,3 +22,17 @@ button.danger { background: #ef4444; }
 
 form { display: flex; gap: .5rem; padding: .8rem; background: #fff; border-top: 1px solid #e5e7eb; }
 form textarea { flex: 1; resize: none; height: 3.2em; }
+
+.workspace { flex: 1; display: flex; min-height: 0; }
+.conversation { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+
+#saved-chats { width: 220px; flex-shrink: 0; overflow-y: auto; background: #f1f5f9; border-right: 1px solid #e5e7eb; padding: .5rem; }
+#saved-chats h2 { font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; color: #64748b; margin: .3rem .3rem .5rem; }
+#saved-chats .empty { font-size: .8rem; color: #94a3b8; padding: 0 .3rem; }
+#saved-chats ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .25rem; }
+.chat-item { width: 100%; text-align: left; background: transparent; color: #1f2937; border: 1px solid transparent; padding: .4rem .5rem; display: flex; flex-direction: column; gap: .15rem; }
+.chat-item:hover:not(:disabled) { background: #e2e8f0; }
+.chat-item.active { background: #dbeafe; border-color: #93c5fd; }
+.chat-item:disabled { background: transparent; }
+.chat-item .title { font-size: .85rem; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-item .sub { font-size: .7rem; opacity: .7; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -24,25 +24,47 @@
   }
 }
 
-<div id="messages">
-  @for (bubble of store.bubbles(); track $index) {
-    <div [class]="'msg ' + bubble.kind">
-      @if (bubble.kind === 'assistant') {
-        <span class="meta">assistant</span>
+<div class="workspace">
+  <aside id="saved-chats">
+    <h2>Saved chats</h2>
+    @if (store.savedChats().length === 0) {
+      <p class="empty">No saved chats yet.</p>
+    }
+    <ul>
+      @for (chat of store.savedChats(); track chat.id) {
+        <li>
+          <button type="button" class="chat-item" [class.active]="chat.id === store.chatId()"
+            [disabled]="store.busy()" (click)="openChat(chat.id)">
+            <span class="title">{{ chat.title }}</span>
+            <span class="sub">{{ chat.model }} · {{ chat.message_count }} msg</span>
+          </button>
+        </li>
       }
-      {{ bubble.text }}
-    </div>
-  }
-  @if (store.liveThinking().length > 0) {
-    <div class="msg assistant thinking"><span class="meta">thinking</span>{{ store.liveThinking() }}</div>
-  }
-  @if (store.liveText().length > 0) {
-    <div class="msg assistant"><span class="meta">assistant</span>{{ store.liveText() }}</div>
-  }
-</div>
+    </ul>
+  </aside>
 
-<form (submit)="onSubmit($event)">
-  <textarea [value]="draft()" (input)="onDraftInput($event)" (keydown)="onKeydown($event)"
-    placeholder="Type a message… (Ctrl+Enter to send)"></textarea>
-  <button type="submit" [disabled]="store.busy() || !store.chatId()">Send</button>
-</form>
+  <section class="conversation">
+    <div id="messages">
+      @for (bubble of store.bubbles(); track $index) {
+        <div [class]="'msg ' + bubble.kind">
+          @if (bubble.kind === 'assistant') {
+            <span class="meta">assistant</span>
+          }
+          {{ bubble.text }}
+        </div>
+      }
+      @if (store.liveThinking().length > 0) {
+        <div class="msg assistant thinking"><span class="meta">thinking</span>{{ store.liveThinking() }}</div>
+      }
+      @if (store.liveText().length > 0) {
+        <div class="msg assistant"><span class="meta">assistant</span>{{ store.liveText() }}</div>
+      }
+    </div>
+
+    <form (submit)="onSubmit($event)">
+      <textarea [value]="draft()" (input)="onDraftInput($event)" (keydown)="onKeydown($event)"
+        placeholder="Type a message… (Ctrl+Enter to send)"></textarea>
+      <button type="submit" [disabled]="store.busy() || !store.chatId()">Send</button>
+    </form>
+  </section>
+</div>
