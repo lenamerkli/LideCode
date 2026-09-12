@@ -1,49 +1,29 @@
 {
-  // Visit https://aka.ms/tsconfig to read more about this file
+  // Type-checking configuration for the Electron main process, the engine and
+  // the shared IPC contract. Emission is handled by scripts/build-electron.mjs
+  // (esbuild); the Angular UI has its own configuration in ui/tsconfig.json.
   "compilerOptions": {
-    // File Layout
-    // "rootDir": "./src",
-    // "outDir": "./dist",
-
-    // Environment Settings
-    // See also https://aka.ms/tsconfig/module
-    // For nodejs:
     "lib": ["esnext"],
     "types": ["node"],
-    // and npm install -D @types/node
 
-    // Other Outputs
     "sourceMap": true,
-    "declaration": true,
-    "declarationMap": true,
 
     // Stricter Typechecking Options
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
 
-    // Style Options
-    // "noImplicitReturns": true,
-    // "noImplicitOverride": true,
-    // "noUnusedLocals": true,
-    // "noUnusedParameters": true,
-    // "noFallthroughCasesInSwitch": true,
-    // "noPropertyAccessFromIndexSignature": true,
-
-    // Recommended Options
-    "jsx": "react-jsx",
     "verbatimModuleSyntax": false,
     "isolatedModules": true,
     "noUncheckedSideEffectImports": true,
     "moduleDetection": "force",
     "skipLibCheck": true,
-    "target": "ES6",                  // Compiles to modern JavaScript
-    "module": "NodeNext",            // Node ESM (requires .js extensions on imports)
-    "moduleResolution": "NodeNext",  // Resolve modules the way Node does
-    "outDir": "./dist",              // Output compiled files to 'dist'
-    "rootDir": "./src",              // Source files are in 'src'
-    "strict": true,                  // Enable all strict type checks
-    "esModuleInterop": true          // Allow default imports from CommonJS modules
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "noEmit": true,
+    "strict": true,
+    "esModuleInterop": true
   },
-  "include": ["src/**/*"],           // Include all TypeScript files in 'src'
-  "exclude": ["node_modules"]        // Exclude dependencies
+  "include": ["src/**/*", "shared/**/*", "electron/**/*"],
+  "exclude": ["node_modules", "ui", "dist-electron", "release"]
 }

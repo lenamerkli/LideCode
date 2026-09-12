@@ -1,11 +1,22 @@
 {
   "name": "lidecode",
   "version": "1.0.0",
-  "description": "",
+  "description": "LideCode — containerized coding agent, packaged as an Electron desktop app with an Angular UI",
   "type": "module",
-  "main": "index.js",
+  "main": "dist-electron/main.cjs",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "build:electron": "node scripts/build-electron.mjs",
+    "watch:electron": "node scripts/build-electron.mjs --watch",
+    "build:ui": "npm --prefix ui run build",
+    "build": "npm run build:electron && npm run build:ui",
+    "typecheck": "tsc -p tsconfig.json",
+    "smoke": "node scripts/smoke.mjs",
+    "smoke:electron": "node scripts/smoke-electron.mjs",
+    "start": "npm run build && electron .",
+    "dev:ui": "npm --prefix ui run start",
+    "dev:app": "wait-on tcp:127.0.0.1:4200 && cross-env LIDECODE_DEV_SERVER=http://localhost:4200 electron .",
+    "dev": "concurrently -k -n electron,ui,app -c blue,green,magenta \"npm:watch:electron\" \"npm:dev:ui\" \"npm:dev:app\"",
+    "dist": "npm run build && electron-builder"
   },
   "repository": {
     "type": "git",
@@ -17,14 +28,16 @@
     "url": "https://github.com/lenamerkli/LideCode/issues"
   },
   "homepage": "https://github.com/lenamerkli/LideCode#readme",
-  "dependencies": {
-    "@openrouter/sdk": "^1.2.66",
-    "dotenv": "^17.4.2",
-    "express": "^5.2.1"
-  },
+  "dependencies": {},
   "devDependencies": {
-    "@types/express": "^5.0.6",
+    "@openrouter/sdk": "^1.2.66",
     "@types/node": "^26.3.0",
-    "typescript": "^7.0.2"
+    "concurrently": "^10.0.5",
+    "cross-env": "^10.1.0",
+    "electron": "^44.3.0",
+    "electron-builder": "^26.15.3",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2",
+    "wait-on": "^9.1.0"
   }
 }

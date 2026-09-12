@@ -257,3 +257,8 @@ cython_debug/
 flet-docs/
 headroom/
 node_modules/
+
+dist-electron/
+release/
+.env
+dist-smoke/

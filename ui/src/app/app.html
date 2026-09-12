@@ -1,0 +1,48 @@
+<header>
+  <h1>LideCode</h1>
+  <label>Model
+    <select [value]="store.selectedModel()" (change)="onModelChange($event)">
+      @for (model of store.models(); track model.name) {
+        <option [value]="model.name">{{ model.name }}</option>
+      }
+    </select>
+  </label>
+  <label>Project
+    <input type="text" [value]="store.projectName()" (input)="onProjectInput($event)" size="12">
+  </label>
+  <button type="button" [disabled]="store.busy()" (click)="store.createChat()">New chat</button>
+  <button type="button" [disabled]="!store.busy()" (click)="store.cancel()">Cancel</button>
+  <button type="button" class="danger" [disabled]="store.busy() || !store.chatId()" (click)="store.deleteChat()">
+    Delete chat
+  </button>
+  <span id="status">{{ store.status() }}</span>
+</header>
+
+@if (store.docker(); as docker) {
+  @if (!docker.available) {
+    <div class="banner">{{ docker.message }}</div>
+  }
+}
+
+<div id="messages">
+  @for (bubble of store.bubbles(); track $index) {
+    <div [class]="'msg ' + bubble.kind">
+      @if (bubble.kind === 'assistant') {
+        <span class="meta">assistant</span>
+      }
+      {{ bubble.text }}
+    </div>
+  }
+  @if (store.liveThinking().length > 0) {
+    <div class="msg assistant thinking"><span class="meta">thinking</span>{{ store.liveThinking() }}</div>
+  }
+  @if (store.liveText().length > 0) {
+    <div class="msg assistant"><span class="meta">assistant</span>{{ store.liveText() }}</div>
+  }
+</div>
+
+<form (submit)="onSubmit($event)">
+  <textarea [value]="draft()" (input)="onDraftInput($event)" (keydown)="onKeydown($event)"
+    placeholder="Type a message… (Ctrl+Enter to send)"></textarea>
+  <button type="submit" [disabled]="store.busy() || !store.chatId()">Send</button>
+</form>

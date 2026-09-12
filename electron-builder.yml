@@ -1,0 +1,27 @@
+appId: com.lidecode.app
+productName: LideCode
+directories:
+  output: release
+  buildResources: build
+files:
+  - dist-electron/**
+  - ui/dist/**
+  - package.json
+extraResources:
+  - from: src/docker
+    to: docker
+    filter:
+      - "**/*"
+      - "!__pycache__"
+      - "!**/__pycache__/**"
+      - "!**/*.pyc"
+linux:
+  target:
+    - AppImage
+  category: Development
+win:
+  target:
+    - nsis
+mac:
+  target:
+    - dmg

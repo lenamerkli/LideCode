@@ -15,6 +15,8 @@ import {join} from "node:path";
 import {chmod, mkdir, readFile, writeFile} from "node:fs/promises";
 import {randomBytes} from "node:crypto";
 import {getRequestWithHeaders, postRequest} from "./util.js";
+import {getPaths} from "./config.js";
+import type {ChatEvent} from "../shared/contract.js";
 
 export const IMAGE_NAME = 'lidecode_debian_13'
 export const CONTAINER_PREFIX = 'lidecode_'
@@ -26,24 +28,10 @@ export const ALLOW_WEB_ENV = 'ALLOW_WEB'
 // Web-related skill and script hidden from the agent when web access is disabled.
 export const WEB_SKILLS_DIR = '/home/agent/skills/web/'
 export const WEB_SCRIPT_PATH = '/home/agent/scripts/webpage_to_markdown'
-const TOKEN_DIR = "/opt/LideCode";
-const TOKEN_FILE = join(TOKEN_DIR, "access_token");
-
-/**
- * Events emitted by a `Chat` for the entire duration of a user turn. A turn
- * spans one or more generation streams plus the tool executions between
- * them. Subscribing is purely observational: it never influences the turn.
- */
-export type ChatEvent =
-  | { type: 'generation_started' }
-  | { type: 'thinking'; delta: string }
-  | { type: 'text'; delta: string }
-  | { type: 'generation_finished'; finish_reason: string | null; tool_calls: { id: string; name: string; arguments: string }[] }
-  | { type: 'tool_started'; id: string; name: string }
-  | { type: 'tool_finished'; id: string; name: string }
-  | { type: 'turn_finished' }
-  | { type: 'error'; message: string }
-  | { type: 'closed' };
+/** Absolute path of the sandbox access token inside the configured data dir. */
+function tokenFile(): string {
+  return join(getPaths().dataDir, "access_token");
+}
 
 /**
  * Run a command asynchronously without a shell, passing arguments as an array
@@ -69,17 +57,18 @@ function run(command: string, args: string[], options?: {timeout?: number}): Pro
 
 
 export async function getOrCreateAccessToken(): Promise<string> {
-  await mkdir(TOKEN_DIR, { recursive: true });
+  await mkdir(getPaths().dataDir, { recursive: true });
+  const file = tokenFile();
   try {
-    return (await readFile(TOKEN_FILE, "utf8")).trim();
+    return (await readFile(file, "utf8")).trim();
   } catch (error: unknown) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
       throw error;
     }
   }
   const token = `sk-${randomBytes(32).toString("hex")}`;
-  await writeFile(TOKEN_FILE, token, { encoding: "utf8", mode: 0o600 });
-  await chmod(TOKEN_FILE, 0o600);
+  await writeFile(file, token, { encoding: "utf8", mode: 0o600 });
+  await chmod(file, 0o600);
   return token;
 }
 
@@ -140,7 +129,9 @@ export class Chat {
     this._tools_prompt_ext = tools_prompt_ext
     this._ip= CONTAINER_IP_PREFIX + Math.floor(Math.random() * 254 + 1).toString()
     this._container_name = CONTAINER_PREFIX + this._ip.split('.').pop()
-    this._tools = DEFAULT_TOOLS
+    // Copy the shared tool list so per-chat additions (web search, vision,
+    // external tools) never leak into other chats.
+    this._tools = [...DEFAULT_TOOLS]
     this._tools.push(...external_tools.map(tool => tool.definition))
     for (const external_tool of external_tools) {
       this._external_tools[external_tool.definition.function.name] = external_tool
@@ -157,8 +148,9 @@ export class Chat {
   async ensure_docker_image(): Promise<void> {
     const stdout = await run('docker', ['images']);
     if (!stdout.includes(IMAGE_NAME)) {
-      console.log('Docker image not found, building...');
-      await run('docker', ['build', '-t', IMAGE_NAME, '-f', '/opt/LideCode/docker/DOCKERFILE', '/opt/LideCode/docker'], {timeout: 900_000})
+      const dockerDir = getPaths().dockerContextDir;
+      console.log('Docker image not found, building from ' + dockerDir + '...');
+      await run('docker', ['build', '-t', IMAGE_NAME, '-f', join(dockerDir, 'DOCKERFILE'), dockerDir], {timeout: 900_000})
       console.log('Docker image built');
     }
   }
