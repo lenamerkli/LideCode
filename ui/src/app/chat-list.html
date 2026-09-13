@@ -1,0 +1,31 @@
+<div class="sidenav-header">
+  <span class="sidenav-title">Saved chats</span>
+  <button
+    mat-icon-button
+    type="button"
+    [disabled]="store.busy()"
+    (click)="newChat.emit()"
+    matTooltip="New chat"
+    aria-label="New chat"
+  >
+    <mat-icon svgIcon="add"></mat-icon>
+  </button>
+</div>
+<mat-divider></mat-divider>
+
+@if (store.savedChats().length === 0) {
+  <p class="empty">No saved chats yet.</p>
+} @else {
+  <mat-nav-list class="chat-list">
+    @for (chat of store.savedChats(); track chat.id) {
+      <mat-list-item
+        [activated]="chat.id === store.chatId()"
+        [disabled]="store.busy()"
+        (click)="open.emit(chat.id)"
+      >
+        <span matListItemTitle>{{ chat.title }}</span>
+        <span matListItemLine>{{ chat.model }} · {{ chat.message_count }} msg</span>
+      </mat-list-item>
+    }
+  </mat-nav-list>
+}

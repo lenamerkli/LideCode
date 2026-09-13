@@ -1,0 +1,38 @@
+:host {
+  display: contents;
+}
+
+.bubble {
+  max-width: min(75%, 60rem);
+  padding: 0.6rem 0.9rem;
+  border-radius: var(--mat-sys-corner-large);
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: var(--mat-sys-body-medium);
+}
+
+.bubble .meta {
+  display: block;
+  font: var(--mat-sys-label-small);
+  opacity: 0.6;
+  margin-bottom: 0.15rem;
+}
+
+.bubble.user {
+  align-self: flex-end;
+  background: var(--mat-sys-primary);
+  color: var(--mat-sys-on-primary);
+}
+
+.bubble.assistant {
+  align-self: flex-start;
+  background: var(--mat-sys-surface-container-high);
+  color: var(--mat-sys-on-surface);
+}
+
+.bubble.error {
+  align-self: center;
+  background: var(--mat-sys-error-container);
+  color: var(--mat-sys-on-error-container);
+  border: 1px solid var(--mat-sys-error);
+}

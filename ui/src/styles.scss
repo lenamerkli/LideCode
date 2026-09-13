@@ -1,0 +1,57 @@
+// Global styles for the LideCode renderer.
+//
+// The theme is built with the Angular Material v19+ Sass API (`mat.theme`).
+// Typography deliberately stays on the system font stack: the packaged app is
+// loaded from disk (`file://`) and must not depend on Google Fonts or on the
+// Material Symbols icon font (icons are bundled as SVG literals, see icons.ts).
+@use '@angular/material' as mat;
+
+html {
+  // Follow the OS light/dark preference; the theme emits `light-dark()` colors.
+  color-scheme: light dark;
+
+  @include mat.theme(
+    (
+      color: (
+        primary: mat.$azure-palette,
+        tertiary: mat.$blue-palette,
+      ),
+      typography: (
+        plain-family: (
+          'system-ui',
+          '-apple-system',
+          'Segoe UI',
+          sans-serif,
+        ),
+        brand-family: (
+          'system-ui',
+          '-apple-system',
+          'Segoe UI',
+          sans-serif,
+        ),
+      ),
+      density: 0,
+    )
+  );
+
+  @include mat.strong-focus-indicators();
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--mat-sys-surface);
+  color: var(--mat-sys-on-surface);
+  font: var(--mat-sys-body-medium);
+}
+
+// Snack bar variants emitted by the shell (`panelClass` in app.ts).
+.mat-mdc-snack-bar-container.notice-error {
+  --mdc-snackbar-container-color: var(--mat-sys-error-container);
+  --mdc-snackbar-supporting-text-color: var(--mat-sys-on-error-container);
+  --mat-snack-bar-button-color: var(--mat-sys-on-error-container);
+}

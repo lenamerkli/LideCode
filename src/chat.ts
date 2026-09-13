@@ -26,7 +26,7 @@ import {chmod, mkdir, readFile, writeFile} from "node:fs/promises";
 import {randomBytes, randomUUID} from "node:crypto";
 import {getRequestWithHeaders, postRequest} from "./util.js";
 import {getPaths} from "./config.js";
-import type {ChatEvent, ExternalToolInput, SavedChat, SerializedMessage} from "../shared/contract.js";
+import type {ChatEvent, ExternalToolInput, SavedChat, SerializedMessage, VolumeMode, VolumeMount} from "../shared/contract.js";
 
 export const IMAGE_NAME = 'lidecode_debian_13'
 export const CONTAINER_PREFIX = 'lidecode_'
@@ -41,6 +41,15 @@ export const WEB_SCRIPT_PATH = '/home/agent/scripts/webpage_to_markdown'
 /** Absolute path of the sandbox access token inside the configured data dir. */
 function tokenFile(): string {
   return join(getPaths().dataDir, "access_token");
+}
+
+/**
+ * Format a single `docker run -v` argument. The mode is omitted when unset so
+ * that Docker keeps applying its own default (`rw`), which also keeps mount
+ * strings written before read-only support working unchanged.
+ */
+export function volumeArgument(host: string, container: string, mode: VolumeMode | undefined): string {
+  return mode === undefined ? host + ':' + container : host + ':' + container + ':' + mode;
 }
 
 /**
@@ -164,7 +173,7 @@ export class Chat {
   private readonly _allow_web: boolean
   private readonly _system_prompt_ext: string | undefined
   private readonly _tools_prompt_ext: string | undefined
-  private _volumes: [string, string][] | undefined
+  private _volumes: VolumeMount[] | undefined
   private _env: Record<string, string> | undefined
   private _container_started: boolean = false
   /** Hook invoked after any change worth persisting (set by the engine). */
@@ -240,15 +249,15 @@ export class Chat {
     this._container_started = false
   }
 
-  async start_docker(additional_volumes: [string, string][] | undefined, env: Record<string, string> | undefined): Promise<void> {
+  async start_docker(additional_volumes: VolumeMount[] | undefined, env: Record<string, string> | undefined): Promise<void> {
     await this.stop_docker()
     await this.ensure_docker_image()
     await this.ensure_docker_network()
     this._access_token = await getOrCreateAccessToken()
     const args = ['run', '-d', '--name', this._container_name, '--network', NETWORK_NAME, '--ip', this._ip, '-e', 'ACCESS_TOKEN=' + this._access_token, '-e', 'PROJECT_NAME=' + this._project_name, '-e', ALLOW_WEB_ENV + '=' + (this._allow_web ? 'true' : 'false')]
     if (additional_volumes) {
-      for (const [host, container] of additional_volumes) {
-        args.push('-v', host + ':' + container)
+      for (const [host, container, mode] of additional_volumes) {
+        args.push('-v', volumeArgument(host, container, mode))
       }
     }
     if (env) {

@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { configurePaths } from '../src/config.js';
 import { ApiError, Engine } from '../src/engine.js';
-import { Chat } from '../src/chat.js';
+import { Chat, volumeArgument } from '../src/chat.js';
 import { deleteSavedChat, deriveTitle, listSavedChats, loadSavedChat, saveSavedChat } from '../src/persistence.js';
 import type { SavedChat, SerializedMessage } from '../shared/contract.js';
 
@@ -58,6 +58,12 @@ async function main(): Promise<void> {
     () => engine.createChat({ model: '__nope__', project_name: 'p' }));
   await expectApiError('createChat rejects malformed volumes', 400,
     () => engine.createChat({ model: first?.name, project_name: 'p', volumes: ['oops'] }));
+  await expectApiError('createChat rejects an unknown volume mode', 400,
+    () => engine.createChat({ model: first?.name, project_name: 'p', volumes: [['/host', '/c', 'rwx']] }));
+  await expectApiError('createChat rejects a volume entry with a non-string path', 400,
+    () => engine.createChat({ model: first?.name, project_name: 'p', volumes: [['/host', 7, 'ro']] }));
+  await expectApiError('createChat rejects an over-long volume entry', 400,
+    () => engine.createChat({ model: first?.name, project_name: 'p', volumes: [['/host', '/c', 'ro', 'x']] }));
   await expectApiError('createChat rejects malformed env', 400,
     () => engine.createChat({ model: first?.name, project_name: 'p', env: { A: 1 } }));
   await expectApiError('createChat rejects malformed external_tools', 400,
@@ -76,6 +82,14 @@ async function main(): Promise<void> {
   });
   unsubscribe();
   check('subscribe returns an unsubscribe function', eventCount === 0);
+
+  // --- volume mount formatting (pure, no Docker) -----------------------------
+  check('volumeArgument keeps Docker\'s default for a plain mount',
+    volumeArgument('/host/data', '/home/agent/data', undefined) === '/host/data:/home/agent/data');
+  check('volumeArgument appends a read-only mode',
+    volumeArgument('/host/data', '/home/agent/data', 'ro') === '/host/data:/home/agent/data:ro');
+  check('volumeArgument appends an explicit read-write mode',
+    volumeArgument('/host/data', '/home/agent/data', 'rw') === '/host/data:/home/agent/data:rw');
 
   if (process.env['LIDECODE_SMOKE_DOCKER'] === '1' && first !== undefined) {
     const state = await engine.createChat({ model: first.name, project_name: 'smoke' });
@@ -121,6 +135,10 @@ async function main(): Promise<void> {
       cost: 1.25,
       allow_web: true,
       external_tools: [],
+      volumes: [
+        ['/host/data', '/home/agent/data', 'ro'],
+        ['/host/src', '/home/agent/src'],
+      ],
       messages,
       created_at: '2024-01-01T00:00:00.000Z',
       updated_at: '2024-01-02T00:00:00.000Z',
@@ -143,6 +161,9 @@ async function main(): Promise<void> {
     check('Chat.fromSnapshot restores cost and model', roundTrip.cost === 1.25 && roundTrip.model === doc.model);
     check('snapshot round-trips messages byte-for-byte',
       JSON.stringify(roundTrip.messages) === JSON.stringify(messages));
+    check('snapshot round-trips volume mounts with their access mode',
+      JSON.stringify(roundTrip.volumes)
+      === JSON.stringify([['/host/data', '/home/agent/data', 'ro'], ['/host/src', '/home/agent/src']]));
 
     const opened = await engine.openChat('smoke-chat-1');
     check('Engine.openChat rehydrates a saved chat', opened.id === 'smoke-chat-1' && opened.cost === 1.25);

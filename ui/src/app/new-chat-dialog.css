@@ -1,0 +1,80 @@
+.dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: min(30rem, 80vw);
+}
+
+.allow-web {
+  margin: 0.25rem 0 0.5rem;
+}
+
+.mounts {
+  margin-bottom: 0.5rem;
+}
+
+.mount-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.5rem 0.75rem 0.25rem;
+  margin-bottom: 0.5rem;
+  border: 1px solid var(--mat-sys-outline-variant);
+  border-radius: var(--mat-sys-corner-medium);
+}
+
+.mount-fields {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.mount-fields .host-field {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.mount-fields .container-field {
+  flex: 0 1 14rem;
+  min-width: 0;
+}
+
+.mount-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.mount-spacer {
+  flex: 1;
+}
+
+.add-mount {
+  margin-bottom: 0.5rem;
+}
+
+code {
+  font: var(--mat-sys-body-small);
+  background: var(--mat-sys-surface-container-high);
+  border-radius: var(--mat-sys-corner-extra-small);
+  padding: 0 0.2rem;
+}
+
+.advanced {
+  margin-bottom: 0.5rem;
+}
+
+.hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin: 0.25rem 0 0;
+  font: var(--mat-sys-body-small);
+  color: var(--mat-sys-on-surface-variant);
+}
+
+.hint mat-icon {
+  flex-shrink: 0;
+  width: 1.1rem;
+  height: 1.1rem;
+  font-size: 1.1rem;
+}

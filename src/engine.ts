@@ -21,6 +21,7 @@ import type {
   GenerationInfo,
   ModelInfo,
   SerializedMessage,
+  VolumeMount,
 } from '../shared/contract.js';
 
 /** Error carrying an HTTP-like status code, surfaced to the renderer as-is. */
@@ -39,6 +40,21 @@ function requireString(body: Record<string, unknown>, field: string): string {
     throw new ApiError(400, `The field "${field}" is required and must be a non-empty string`);
   }
   return value;
+}
+
+/**
+ * Validate one entry of the `volumes` array. The third element is the optional
+ * Docker access mode: `[host, container]` or `[host, container, "ro" | "rw"]`.
+ */
+function isVolumeMount(value: unknown): value is VolumeMount {
+  if (!Array.isArray(value) || (value.length !== 2 && value.length !== 3)) {
+    return false;
+  }
+  if (!value.every((part) => typeof part === 'string' && part.length > 0)) {
+    return false;
+  }
+  const mode: unknown = value[2];
+  return mode === undefined || mode === 'ro' || mode === 'rw';
 }
 
 /** Resolve the version of the Docker CLI, or an explanatory failure. */
@@ -340,14 +356,12 @@ export class Engine {
       }
       temperature = request['temperature'];
     }
-    let volumes: [string, string][] | undefined = undefined;
+    let volumes: VolumeMount[] | undefined = undefined;
     if (request['volumes'] !== undefined) {
-      if (!Array.isArray(request['volumes']) || !request['volumes'].every(
-        (volume) => Array.isArray(volume) && volume.length === 2 && volume.every((part) => typeof part === 'string')
-      )) {
-        throw new ApiError(400, 'The field "volumes" must be an array of [host, container] string pairs');
+      if (!Array.isArray(request['volumes']) || !request['volumes'].every(isVolumeMount)) {
+        throw new ApiError(400, 'The field "volumes" must be an array of [host, container] or [host, container, "ro"|"rw"] entries');
       }
-      volumes = request['volumes'] as [string, string][];
+      volumes = request['volumes'] as VolumeMount[];
     }
     let env: Record<string, string> | undefined = undefined;
     if (request['env'] !== undefined) {

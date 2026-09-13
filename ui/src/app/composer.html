@@ -1,0 +1,20 @@
+<form class="composer" (submit)="onSubmit($event)">
+  <mat-form-field class="composer-field">
+    <textarea
+      matInput
+      cdkTextareaAutosize
+      cdkAutosizeMinRows="2"
+      cdkAutosizeMaxRows="10"
+      [value]="draft()"
+      [disabled]="disabled()"
+      (input)="onInput($event)"
+      (keydown)="onKeydown($event)"
+      placeholder="Type a message… (Ctrl+Enter to send)"
+    ></textarea>
+  </mat-form-field>
+
+  <button mat-flat-button type="submit" class="send-button" [disabled]="!canSend()">
+    <mat-icon svgIcon="send"></mat-icon>
+    Send
+  </button>
+</form>

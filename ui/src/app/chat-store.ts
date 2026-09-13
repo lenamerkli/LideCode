@@ -3,9 +3,12 @@ import type {
   ChatEvent,
   ChatState,
   ChatSummary,
+  CreateChatRequest,
   DockerStatus,
   ModelInfo,
   SerializedMessage,
+  Settings,
+  VolumeMount,
 } from '../../../shared/contract';
 import { bridge } from './lidecode-bridge';
 
@@ -16,6 +19,25 @@ export interface Bubble {
   text: string;
 }
 
+/** Transient message surfaced to the user (rendered as a snack bar). */
+export type NoticeKind = 'info' | 'error';
+
+export interface Notice {
+  message: string;
+  kind: NoticeKind;
+}
+
+/** Values collected by the "New chat" dialog. */
+export interface CreateChatOptions {
+  model: string;
+  projectName: string;
+  allowWeb: boolean;
+  temperature?: number;
+  systemPromptExt?: string;
+  /** Host directory mounts, as `[hostPath, containerPath, mode?]` entries. */
+  volumes?: VolumeMount[];
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -24,8 +46,10 @@ function errorMessage(error: unknown): string {
 function contentToText(content: unknown): string {
   if (Array.isArray(content)) {
     return content
-      .filter((part): part is { type: string; text: string } =>
-        typeof part === 'object' && part !== null && (part as { type?: unknown }).type === 'text')
+      .filter(
+        (part): part is { type: string; text: string } =>
+          typeof part === 'object' && part !== null && (part as { type?: unknown }).type === 'text',
+      )
       .map((part) => part.text)
       .join('\n');
   }
@@ -42,12 +66,18 @@ function toBubbles(messages: SerializedMessage[]): Bubble[] {
     const text = contentToText(message.content);
     if (message.role === 'tool') {
       bubbles.push({ kind: 'assistant', text: '[tool result] ' + text });
-    } else if (message.role === 'assistant' && message.tool_calls && message.tool_calls.length > 0) {
+    } else if (
+      message.role === 'assistant' &&
+      message.tool_calls &&
+      message.tool_calls.length > 0
+    ) {
       bubbles.push({
         kind: 'assistant',
-        text: '[tool calls] ' + message.tool_calls
-          .map((call) => call.function.name + '(' + call.function.arguments + ')')
-          .join(', '),
+        text:
+          '[tool calls] ' +
+          message.tool_calls
+            .map((call) => call.function.name + '(' + call.function.arguments + ')')
+            .join(', '),
       });
     } else {
       bubbles.push({ kind: message.role === 'user' ? 'user' : 'assistant', text });
@@ -64,6 +94,7 @@ function toBubbles(messages: SerializedMessage[]): Bubble[] {
 export class ChatStore {
   readonly models = signal<ModelInfo[]>([]);
   readonly savedChats = signal<ChatSummary[]>([]);
+  readonly settings = signal<Settings>({});
   readonly selectedModel = signal('');
   readonly projectName = signal('test-project');
   readonly chatId = signal<string | null>(null);
@@ -74,20 +105,51 @@ export class ChatStore {
   readonly status = signal('');
   readonly cost = signal(0);
   readonly docker = signal<DockerStatus | null>(null);
+  readonly notice = signal<Notice | null>(null);
 
   private unsubscribe?: () => void;
   private pollTimer?: ReturnType<typeof setTimeout>;
 
   /** Subscribe to engine events and load the initial data. */
   async init(): Promise<void> {
-    this.unsubscribe ??= bridge().chats.onEvent(({ chatId, event }) => this.handleEvent(chatId, event));
+    this.unsubscribe ??= bridge().chats.onEvent(({ chatId, event }) =>
+      this.handleEvent(chatId, event),
+    );
+    await this.loadSettings();
     void this.loadModels();
     void this.loadSavedChats();
     try {
-      this.docker.set(await bridge().docker.status());
+      const docker = await bridge().docker.status();
+      this.docker.set(docker);
+      if (!docker.available) {
+        this.notify(docker.message ?? 'Docker is not available.');
+      }
     } catch {
       this.docker.set(null);
     }
+  }
+
+  /** Load the persisted settings (API keys and dialog defaults). */
+  async loadSettings(): Promise<void> {
+    try {
+      this.settings.set(await bridge().settings.get());
+    } catch (error: unknown) {
+      this.notify('Failed to load settings: ' + errorMessage(error), 'error');
+    }
+  }
+
+  /** Persist settings and refresh the local copy. */
+  async saveSettings(settings: Settings): Promise<void> {
+    try {
+      this.settings.set(await bridge().settings.set(settings));
+      this.notify('Settings saved.');
+    } catch (error: unknown) {
+      this.notify('Failed to save settings: ' + errorMessage(error), 'error');
+    }
+  }
+
+  private notify(message: string, kind: NoticeKind = 'info'): void {
+    this.notice.set({ message, kind });
   }
 
   /** Refresh the sidebar list of chats persisted on disk. */
@@ -103,11 +165,18 @@ export class ChatStore {
     try {
       const models = await bridge().models.list();
       this.models.set(models);
-      if (models.length > 0 && this.selectedModel().length === 0) {
-        this.selectedModel.set(models[0]!.name);
+      if (this.selectedModel().length === 0) {
+        const preferred = this.settings().default_model;
+        const known = preferred !== undefined && models.some((model) => model.name === preferred);
+        this.selectedModel.set(known ? preferred : (models[0]?.name ?? ''));
+      }
+      const project = this.settings().default_project_name;
+      if (project !== undefined && project.length > 0 && this.projectName() === 'test-project') {
+        this.projectName.set(project);
       }
     } catch (error: unknown) {
       this.status.set('Failed to load models: ' + errorMessage(error));
+      this.notify('Failed to load models: ' + errorMessage(error), 'error');
     }
   }
 
@@ -145,7 +214,9 @@ export class ChatStore {
         if (event.tool_calls.length > 0) {
           this.append({
             kind: 'assistant',
-            text: '[tool calls] ' + event.tool_calls.map((call) => call.name + '(' + call.arguments + ')').join(', '),
+            text:
+              '[tool calls] ' +
+              event.tool_calls.map((call) => call.name + '(' + call.arguments + ')').join(', '),
           });
         }
         break;
@@ -239,23 +310,47 @@ export class ChatStore {
     }
   }
 
-  async createChat(): Promise<void> {
+  /** Start a new chat (and its sandbox container) from the dialog's values. */
+  async createChat(options: CreateChatOptions): Promise<boolean> {
     this.stopPolling();
     this.liveText.set('');
     this.liveThinking.set('');
     this.bubbles.set([]);
     this.chatId.set(null);
+
+    const request: CreateChatRequest = {
+      model: options.model,
+      project_name: options.projectName.length > 0 ? options.projectName : 'test-project',
+      allow_web: options.allowWeb,
+    };
+    if (options.temperature !== undefined) {
+      request.temperature = options.temperature;
+    }
+    if (options.systemPromptExt !== undefined) {
+      request.system_prompt_ext = options.systemPromptExt;
+    }
+    if (options.volumes !== undefined && options.volumes.length > 0) {
+      request.volumes = options.volumes;
+    }
+
     try {
-      const state = await bridge().chats.create({
-        model: this.selectedModel(),
-        project_name: this.projectName() || 'test-project',
-      });
+      const state = await bridge().chats.create(request);
       this.chatId.set(state.id);
+      this.selectedModel.set(state.model);
+      this.projectName.set(state.project_name);
       this.renderState(state);
-      this.append({ kind: 'assistant', text: 'Chat created (' + state.model + '). Container is starting…' });
+      this.append({
+        kind: 'assistant',
+        text: 'Chat created (' + state.model + '). Container is starting…',
+      });
+      this.notify('Chat created with ' + state.model + '.');
       void this.loadSavedChats();
+      return true;
     } catch (error: unknown) {
-      this.append({ kind: 'error', text: 'Create chat failed: ' + errorMessage(error) });
+      const message = 'Create chat failed: ' + errorMessage(error);
+      this.append({ kind: 'error', text: message });
+      this.notify(message, 'error');
+      return false;
     }
   }
 
@@ -272,7 +367,9 @@ export class ChatStore {
       this.chatId.set(state.id);
       this.renderState(state);
     } catch (error: unknown) {
-      this.append({ kind: 'error', text: 'Open chat failed: ' + errorMessage(error) });
+      const message = 'Open chat failed: ' + errorMessage(error);
+      this.append({ kind: 'error', text: message });
+      this.notify(message, 'error');
     }
   }
 
@@ -285,6 +382,7 @@ export class ChatStore {
       await bridge().chats.cancel(id);
     } catch (error: unknown) {
       this.status.set(errorMessage(error));
+      this.notify('Cancel failed: ' + errorMessage(error), 'error');
     }
   }
 
@@ -302,8 +400,10 @@ export class ChatStore {
     this.busy.set(true);
     try {
       await bridge().chats.remove(id);
+      this.notify('Chat deleted.');
     } catch (error: unknown) {
       this.status.set(errorMessage(error));
+      this.notify('Delete failed: ' + errorMessage(error), 'error');
     }
     this.busy.set(false);
     void this.loadSavedChats();
@@ -321,7 +421,9 @@ export class ChatStore {
       await bridge().chats.sendMessage(id, { message });
       this.startPolling();
     } catch (error: unknown) {
-      this.append({ kind: 'error', text: 'Send failed: ' + errorMessage(error) });
+      const failure = 'Send failed: ' + errorMessage(error);
+      this.append({ kind: 'error', text: failure });
+      this.notify(failure, 'error');
       this.busy.set(false);
     }
   }

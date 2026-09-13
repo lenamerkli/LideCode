@@ -21,6 +21,7 @@ export const IPC = {
   settingsGet: 'settings:get',
   settingsSet: 'settings:set',
   dockerStatus: 'docker:status',
+  dialogPickDirectory: 'dialog:pickDirectory',
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];
@@ -91,12 +92,22 @@ export interface GenerationInfo {
   isDone?: boolean;
 }
 
+/** Access mode of a host directory mounted into the sandbox. */
+export type VolumeMode = 'ro' | 'rw';
+
+/**
+ * One host directory mounted into the sandbox, as a Docker `-v` argument:
+ * `[hostPath, containerPath]` or `[hostPath, containerPath, mode]`. Omitting the
+ * mode leaves Docker's default (`rw`), which is what older saved chats contain.
+ */
+export type VolumeMount = [string, string, VolumeMode?];
+
 /** Body of the old `POST /chats` request. */
 export interface CreateChatRequest {
   model: string;
   project_name: string;
   temperature?: number;
-  volumes?: [string, string][];
+  volumes?: VolumeMount[];
   env?: Record<string, string>;
   allow_web?: boolean;
   system_prompt_ext?: string;
@@ -144,7 +155,7 @@ export interface SavedChat {
   system_prompt_ext?: string;
   tools_prompt_ext?: string;
   external_tools: ExternalToolInput[];
-  volumes?: [string, string][];
+  volumes?: VolumeMount[];
   env?: Record<string, string>;
   messages: SerializedMessage[];
   created_at: string;

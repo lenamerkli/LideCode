@@ -36,6 +36,10 @@ export interface LidecodeBridge {
   docker: {
     status(): Promise<DockerStatus>;
   };
+  files: {
+    /** Native "choose a directory" dialog; resolves to a host path or null. */
+    pickDirectory(): Promise<string | null>;
+  };
 }
 
 declare global {

@@ -7,13 +7,30 @@
  * Error for the renderer.
  */
 
-import { ipcMain, webContents } from 'electron';
+import { BrowserWindow, dialog, ipcMain, webContents } from 'electron';
 import { IPC } from '../shared/contract.js';
 import type { IpcResult, Settings } from '../shared/contract.js';
 import { ApiError, Engine } from '../src/engine.js';
 import { loadSettings, saveSettings } from './settings.js';
 
 type Handler = (...args: any[]) => unknown | Promise<unknown>;
+
+/**
+ * Native "choose a directory" dialog, used to pick the host side of a sandbox
+ * volume mount. Returns the absolute host path, or `null` when cancelled.
+ */
+async function pickDirectory(): Promise<string | null> {
+  const options = {
+    title: 'Choose a directory to mount',
+    properties: ['openDirectory', 'createDirectory', 'showHiddenFiles'] as const,
+  };
+  const parent = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
+  const result =
+    parent === undefined
+      ? await dialog.showOpenDialog({ ...options, properties: [...options.properties] })
+      : await dialog.showOpenDialog(parent, { ...options, properties: [...options.properties] });
+  return result.canceled ? null : (result.filePaths[0] ?? null);
+}
 
 export function registerIpc(engine: Engine): void {
   const handle = (channel: string, fn: Handler): void => {
@@ -42,6 +59,7 @@ export function registerIpc(engine: Engine): void {
   handle(IPC.settingsGet, () => loadSettings());
   handle(IPC.settingsSet, (settings: Settings) => saveSettings(settings));
   handle(IPC.dockerStatus, () => engine.dockerStatus());
+  handle(IPC.dialogPickDirectory, () => pickDirectory());
 
   // Forward engine events (thinking/text/tool/...) to every renderer.
   engine.subscribe((chatId, event) => {

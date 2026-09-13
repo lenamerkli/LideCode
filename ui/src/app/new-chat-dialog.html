@@ -1,0 +1,162 @@
+<h2 mat-dialog-title>New chat</h2>
+
+<mat-dialog-content [formGroup]="form" class="dialog-body">
+  <mat-form-field>
+    <mat-label>Model</mat-label>
+    <mat-select formControlName="model" required>
+      @for (model of data.models; track model.name) {
+        <mat-option [value]="model.name">{{ model.name }}</mat-option>
+      }
+    </mat-select>
+    @if (data.models.length === 0) {
+      <mat-hint>No models available — check your API key in Settings.</mat-hint>
+    }
+    @if (form.controls.model.hasError('required')) {
+      <mat-error>A model is required.</mat-error>
+    }
+  </mat-form-field>
+
+  <mat-form-field>
+    <mat-label>Project directory name</mat-label>
+    <input matInput formControlName="projectName" required placeholder="test-project" />
+    <mat-hint>
+      Created empty inside the sandbox at <code>/home/agent/&lt;name&gt;</code>. Nothing is copied
+      from your machine.
+    </mat-hint>
+    @if (form.controls.projectName.hasError('required')) {
+      <mat-error>A project directory name is required.</mat-error>
+    }
+  </mat-form-field>
+
+  <mat-slide-toggle formControlName="allowWeb" class="allow-web">
+    Allow web search
+  </mat-slide-toggle>
+
+  <mat-expansion-panel class="mounts" [expanded]="mounts.length > 0">
+    <mat-expansion-panel-header>
+      <mat-panel-title>Mounted directories</mat-panel-title>
+      <mat-panel-description>
+        @if (mounts.length === 0) {
+          none
+        } @else {
+          {{ mounts.length }} mounted
+        }
+      </mat-panel-description>
+    </mat-expansion-panel-header>
+
+    <p class="hint">
+      <mat-icon svgIcon="warning"></mat-icon>
+      <span>
+        Nothing from your machine is visible by default — the sandbox only sees its own filesystem.
+        Host paths are passed to Docker unchanged; read-only mounts become
+        <code>host:container:ro</code>.
+      </span>
+    </p>
+
+    <div formArrayName="mounts">
+      @for (mount of mounts.controls; track $index) {
+        <div [formGroupName]="$index" class="mount-card">
+          <div class="mount-fields">
+            <mat-form-field class="host-field">
+              <mat-label>Host directory</mat-label>
+              <input matInput formControlName="host" placeholder="/home/you/project" />
+              <button
+                mat-icon-button
+                matSuffix
+                type="button"
+                matTooltip="Browse…"
+                aria-label="Browse for a host directory"
+                (click)="browse($index)"
+              >
+                <mat-icon svgIcon="folder"></mat-icon>
+              </button>
+              @if (mount.controls.host.hasError('required')) {
+                <mat-error>A host directory is required.</mat-error>
+              }
+            </mat-form-field>
+
+            <mat-form-field class="container-field">
+              <mat-label>Container path</mat-label>
+              <input matInput formControlName="container" placeholder="/home/agent/project" />
+              @if (mount.controls.container.hasError('pattern')) {
+                <mat-error>Use an absolute path starting with “/”.</mat-error>
+              }
+            </mat-form-field>
+          </div>
+
+          <div class="mount-actions">
+            <mat-checkbox
+              formControlName="readOnly"
+              matTooltip="Mount read-only: the agent can read these files but cannot change them"
+            >
+              Read-only
+            </mat-checkbox>
+            <span class="mount-spacer"></span>
+            <button
+              mat-icon-button
+              type="button"
+              matTooltip="Remove mount"
+              aria-label="Remove mount"
+              (click)="removeMount($index)"
+            >
+              <mat-icon svgIcon="delete"></mat-icon>
+            </button>
+          </div>
+        </div>
+      }
+    </div>
+
+    <button mat-stroked-button type="button" class="add-mount" (click)="addMount()">
+      <mat-icon svgIcon="add"></mat-icon>
+      Add directory
+    </button>
+  </mat-expansion-panel>
+
+  <mat-expansion-panel class="advanced">
+    <mat-expansion-panel-header>
+      <mat-panel-title>Advanced</mat-panel-title>
+      <mat-panel-description>Sampling and prompts</mat-panel-description>
+    </mat-expansion-panel-header>
+
+    <mat-form-field>
+      <mat-label>Temperature</mat-label>
+      <input
+        matInput
+        type="number"
+        formControlName="temperature"
+        min="0"
+        max="2"
+        step="0.1"
+        placeholder="provider default"
+      />
+      @if (form.controls.temperature.hasError('min') || form.controls.temperature.hasError('max')) {
+        <mat-error>Use a value between 0 and 2.</mat-error>
+      }
+    </mat-form-field>
+
+    <mat-form-field>
+      <mat-label>Extra system prompt</mat-label>
+      <textarea
+        matInput
+        formControlName="systemPromptExt"
+        rows="3"
+        placeholder="Appended to the default system prompt"
+      ></textarea>
+    </mat-form-field>
+  </mat-expansion-panel>
+
+  <p class="hint">
+    <mat-icon svgIcon="warning"></mat-icon>
+    <span>
+      Each chat gets its own Debian sandbox container. The container starts on demand and the first
+      build can take a few minutes.
+    </span>
+  </p>
+</mat-dialog-content>
+
+<mat-dialog-actions align="end">
+  <button mat-button type="button" (click)="onCancel()">Cancel</button>
+  <button mat-flat-button type="button" [disabled]="form.invalid" (click)="onCreate()">
+    Create chat
+  </button>
+</mat-dialog-actions>

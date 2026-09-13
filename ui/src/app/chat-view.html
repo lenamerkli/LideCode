@@ -1,0 +1,40 @@
+<div class="messages" #scroller>
+  @if (!store.chatId()) {
+    <div class="empty-state">
+      <mat-icon svgIcon="chat" class="empty-icon"></mat-icon>
+      <h2>No chat open</h2>
+      <p>Create a chat to start a sandboxed coding session, or open one from the sidebar.</p>
+      <button mat-flat-button type="button" (click)="newChat.emit()">
+        <mat-icon svgIcon="add"></mat-icon>
+        New chat
+      </button>
+    </div>
+  } @else {
+    @for (bubble of store.bubbles(); track $index) {
+      <app-message-bubble [bubble]="bubble"></app-message-bubble>
+    }
+
+    @if (store.liveThinking().length > 0) {
+      <div class="bubble assistant thinking">
+        <span class="meta">thinking</span>
+        <span class="text">{{ store.liveThinking() }}</span>
+      </div>
+    }
+
+    @if (store.liveText().length > 0) {
+      <div class="bubble assistant streaming">
+        <span class="meta">assistant</span>
+        <span class="text">{{ store.liveText() }}</span>
+      </div>
+    }
+
+    @if (store.busy() && store.liveText().length === 0 && store.liveThinking().length === 0) {
+      <div class="working">
+        <mat-spinner diameter="20"></mat-spinner>
+        <span>{{ store.status() || 'Working…' }}</span>
+      </div>
+    }
+  }
+</div>
+
+<app-composer [disabled]="store.busy() || !store.chatId()" (send)="send($event)"></app-composer>

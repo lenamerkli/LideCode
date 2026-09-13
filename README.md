@@ -18,13 +18,45 @@ user interface is an **Angular** app rendered in a sandboxed renderer.
                 │                              ▼
 ┌──────────────────────── Renderer (Angular) ─────────────────────────────┐
 │  ui/src/app/chat-store.ts   signals-based state + event handling        │
-│  ui/src/app/app.ts|html|css chat view (model, messages, composer)       │
+│  ui/src/app/app.ts|html|css shell: toolbar, sidenav, dialogs, snack bar │
+│  ui/src/app/chat-list       sidebar of persisted chats                  │
+│  ui/src/app/chat-view       transcript + composer                       │
+│  ui/src/app/*-dialog        new chat / settings / confirm modals        │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
 There is no HTTP server: the renderer talks to the main process exclusively
 over IPC. The shared contract lives in `shared/contract.ts` and is imported by
 both sides.
+
+## User interface
+
+The renderer is built with **Angular Material 21** on top of a custom Material 3
+theme (`ui/src/styles.scss`, `mat.theme()` with the Azure palette). Two choices
+keep it working inside the packaged Electron app:
+
+- **No web fonts.** Typography uses the system font stack instead of Roboto, and
+  Material Symbols is not loaded — both would require a CDN request that the
+  offline `file://` renderer cannot make.
+- **Bundled SVG icons.** `ui/src/app/icons.ts` registers sanitized SVG literals on
+  `MatIconRegistry`, because `addSvgIcon(name, url)` fetches over HTTP and fails
+  on `file://`.
+
+State stays in `ChatStore`; components are presentational. Creating a chat, the
+settings screen and deleting a chat are `MatDialog` modals, and transient errors
+are shown through `MatSnackBar`.
+
+The **New chat** dialog can mount host directories into the sandbox. `volumes`
+is accepted only at `chats:create` time (`src/engine.ts`), so the mounts live in
+the create flow; the host side is picked with `files.pickDirectory()` (a native
+`dialog.showOpenDialog` exposed over IPC) and passed to Docker untouched as
+`-v host:container`. Each mount can be marked **read-only**, which becomes
+`-v host:container:ro`; read-write mounts omit the mode so Docker applies its own
+`rw` default, and mounts persisted before read-only support keep working.
+
+Note that `project_name` is **not** a mount: it only names the empty directory
+the container creates at `/home/agent/<name>` (`src/docker/app.py`).
+
 
 ## Prerequisites
 
@@ -113,8 +145,7 @@ test/       headless engine smoke test
 
 ## Known follow-ups
 
-- Add a Content-Security-Policy for the renderer and a settings screen for
-  editing API keys from the UI.
+- Add a Content-Security-Policy for the renderer.
 - Docker Desktop (macOS/Windows) networking: the sandbox uses a dedicated
   `172.30.1.0/24` bridge network with fixed container IPs. Host volume paths in
   `createChat` requests need Windows path translation.

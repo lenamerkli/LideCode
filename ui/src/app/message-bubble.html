@@ -1,0 +1,6 @@
+<div [class]="'bubble ' + bubble().kind">
+  @if (bubble().kind === 'assistant') {
+    <span class="meta">assistant</span>
+  }
+  <span class="text">{{ bubble().text }}</span>
+</div>

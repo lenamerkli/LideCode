@@ -59,6 +59,10 @@ const lidecode = {
   docker: {
     status: (): Promise<DockerStatus> => invoke<DockerStatus>(IPC.dockerStatus),
   },
+  files: {
+    /** Native "choose a directory" dialog; resolves to a host path or null. */
+    pickDirectory: (): Promise<string | null> => invoke<string | null>(IPC.dialogPickDirectory),
+  },
 };
 
 contextBridge.exposeInMainWorld('lidecode', lidecode);
