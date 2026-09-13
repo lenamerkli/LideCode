@@ -4,6 +4,7 @@ export const MODELS = [
   new Model("Claude Fable 5.1", "anthropic/claude-fable-5.1", Providers.OpenRouter, true, true, 1000000),
   new Model("Claude Opus 5", "anthropic/claude-opus-5", Providers.OpenRouter, true, true, 1000000),
   new Model("Claude Sonnet 5", "anthropic/claude-sonnet-5", Providers.OpenRouter, true, true, 1000000),
+  new Model("DeepSeek V4.1 Flash", "deepseek/deepseek-v4.1-flash", Providers.OpenRouter, false, true, 1000000),
   new Model("DeepSeek V4 Flash", "deepseek/deepseek-v4-flash-0731", Providers.OpenRouter, false, true, 1000000),
   new Model("DeepSeek V4 Pro", "deepseek/deepseek-v4-pro-0813", Providers.OpenRouter, false, true, 1000000),
   new Model("Gemini 3.8 Flash", "google/gemini-3.8-flash", Providers.OpenRouter, true, true, 1000000),
