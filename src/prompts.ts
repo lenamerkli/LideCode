@@ -1,5 +1,5 @@
 import {Model} from "./types.js";
-import {Tool} from "./tool_definitions.js";
+import {HOST_TOOL_NAMES, Tool} from "./tool_definitions.js";
 
 
 interface ToolCall {
@@ -52,7 +52,38 @@ export function build_system_prompt(model: Model, project_name: string, tools: T
         prompt += "### websearch\n"
         prompt += format_tool_call({name: "websearch", arguments: {query: "typescript date-fns format UTC timezone", count: 5, freshness: "py"}}, model)
         break
+      case "host_bash":
+        prompt += "### host_bash\n"
+        prompt += format_tool_call({name: "host_bash", arguments: {command: "nvidia-smi"}}, model)
+        break
+      case "host_read_file":
+        prompt += "### host_read_file\n"
+        prompt += format_tool_call({name: "host_read_file", arguments: {path: "/etc/supervisor/conf.d/create_plusplus.conf"}}, model)
+        break
+      case "host_write_to_file":
+        prompt += "### host_write_to_file\n"
+        prompt += format_tool_call({name: "host_write_to_file", arguments: {path: "/etc/supervisor/conf.d/create_plusplus.conf", content: "[program:create_plusplus]\ncommand=/usr/bin/python3 /opt/create_plusplus/main.py\ndirectory=/opt/create_plusplus\nautostart=true\nautorestart=true\nstdout_logfile=/var/log/create_plusplus.log\nstderr_logfile=/var/log/create_plusplus.err\n"}}, model)
+        break
+      case "host_replace_in_file":
+        prompt += "### host_replace_in_file\n"
+        prompt += format_tool_call({name: "host_replace_in_file", arguments: {path: "/etc/supervisor/conf.d/create_plusplus.conf", search: "autostart=true", replace: "autostart=false"}}, model)
+        break
+      case "copy_host_to_docker":
+        prompt += "### copy_host_to_docker\n"
+        prompt += format_tool_call({name: "copy_host_to_docker", arguments: {source: "/home/user/Downloads/dataset.csv", destination: "/home/agent/" + project_name + "/dataset.csv"}}, model)
+        break
+      case "copy_docker_to_host":
+        prompt += "### copy_docker_to_host\n"
+        prompt += format_tool_call({name: "copy_docker_to_host", arguments: {source: "/home/agent/" + project_name + "/output/report.pdf", destination: "/home/user/Documents/report.pdf"}}, model)
+        break
+      case "host_view_image":
+        prompt += "### host_view_image\n"
+        prompt += format_tool_call({name: "host_view_image", arguments: {path: "/home/user/Downloads/image0001.png"}}, model)
+        break
     }
+  }
+  if (tools.some((tool) => HOST_TOOL_NAMES.has(tool.function.name))) {
+    prompt += "# Host tool permissions\nThe `host_*` and `copy_*` tools run on the user's own machine, outside the sandbox. Every call must be approved by the user before it runs, and the user may deny it. If a call is denied, do not retry it unless the user asks; continue with what you can do inside the sandbox.\n"
   }
   if (tools_prompt_ext) {
     prompt += render_tool_call_placeholders(tools_prompt_ext, model)

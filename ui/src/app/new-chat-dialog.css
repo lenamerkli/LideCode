@@ -9,6 +9,22 @@
   margin: 0.25rem 0 0.5rem;
 }
 
+.permissions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin: 0.25rem 0 0.5rem;
+}
+
+.permissions-title {
+  font: var(--mat-sys-label-large);
+  color: var(--mat-sys-on-surface-variant);
+}
+
+.allow-host {
+  margin-bottom: 0.25rem;
+}
+
 .mounts {
   margin-bottom: 0.5rem;
 }

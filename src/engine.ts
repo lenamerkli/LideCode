@@ -12,7 +12,7 @@ import { Chat, cleanup_stale_containers } from './chat.js';
 import { deleteSavedChat, listSavedChats, loadSavedChat, saveSavedChat } from './persistence.js';
 import { MODELS } from './models.js';
 import { Model } from './types.js';
-import { DEFAULT_TOOLS, ExternalTool, Tool, ToolParameters, VIEWIMAGE_TOOL, WEBSEARCH_TOOL } from './tool_definitions.js';
+import { DEFAULT_TOOLS, ExternalTool, HOST_TOOL_NAMES, Tool, ToolParameters, VIEWIMAGE_TOOL, WEBSEARCH_TOOL } from './tool_definitions.js';
 import type {
   ChatEvent,
   ChatState,
@@ -302,7 +302,8 @@ export class Engine {
         throw new ApiError(400, `The tool name "${name}" appears more than once in external_tools`);
       }
       if (DEFAULT_TOOLS.some((tool) => tool.function.name === name)
-        || name === WEBSEARCH_TOOL.function.name || name === VIEWIMAGE_TOOL.function.name) {
+        || name === WEBSEARCH_TOOL.function.name || name === VIEWIMAGE_TOOL.function.name
+        || HOST_TOOL_NAMES.has(name)) {
         throw new ApiError(400, `The tool name "${name}" conflicts with a built-in tool`);
       }
       names.add(name);
@@ -380,6 +381,17 @@ export class Engine {
       allowWeb = request['allow_web'];
     }
 
+    // Host tools (host_bash, host_read_file, ...) reach the user's own machine.
+    // They are offered to the model by default and every individual call still
+    // requires an explicit approval before it runs.
+    let hostTools = true;
+    if (request['host_tools'] !== undefined) {
+      if (typeof request['host_tools'] !== 'boolean') {
+        throw new ApiError(400, 'The field "host_tools" must be a boolean');
+      }
+      hostTools = request['host_tools'];
+    }
+
     let systemPromptExt: string | undefined = undefined;
     if (request['system_prompt_ext'] !== undefined) {
       if (typeof request['system_prompt_ext'] !== 'string' || request['system_prompt_ext'].length === 0) {
@@ -397,7 +409,7 @@ export class Engine {
     }
 
     const externalTools = this.parseExternalTools(request);
-    const chat = new Chat(model, temperature, projectName, externalTools, allowWeb, systemPromptExt, toolsPromptExt);
+    const chat = new Chat(model, temperature, projectName, externalTools, allowWeb, systemPromptExt, toolsPromptExt, hostTools);
     const id = chat.id;
     this.attachPersistence(chat);
     chat.subscribe((event) => this.emit(id, event));
@@ -469,6 +481,19 @@ export class Engine {
   cancel(id: string): ChatState {
     const chat = this.getChat(id);
     chat.cancel_generation();
+    return this.chatState(id, chat);
+  }
+
+  /**
+   * Record the user's decision for a host-tool call that is waiting on
+   * approval. Throws an ApiError when no such request is pending, so a stale or
+   * duplicated UI action is rejected instead of silently ignored.
+   */
+  resolveToolPermission(id: string, toolCallId: string, approved: boolean): ChatState {
+    const chat = this.getChat(id);
+    if (!chat.resolve_tool_permission(toolCallId, approved)) {
+      throw new ApiError(404, `No tool call is waiting for permission with id "${toolCallId}"`);
+    }
     return this.chatState(id, chat);
   }
 

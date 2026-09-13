@@ -55,6 +55,8 @@ export function registerIpc(engine: Engine): void {
   handle(IPC.chatsSendMessage, (id: string, body: unknown) => engine.sendMessage(id, body));
   handle(IPC.chatsGeneration, (id: string) => engine.getGeneration(id));
   handle(IPC.chatsCancel, (id: string) => engine.cancel(id));
+  handle(IPC.chatsToolPermission, (id: string, toolCallId: string, approved: boolean) =>
+    engine.resolveToolPermission(id, toolCallId, approved));
   handle(IPC.chatsDelete, (id: string) => engine.deleteChat(id));
   handle(IPC.settingsGet, () => loadSettings());
   handle(IPC.settingsSet, (settings: Settings) => saveSettings(settings));

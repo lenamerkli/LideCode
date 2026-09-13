@@ -42,6 +42,8 @@ const lidecode = {
       invoke<ChatState>(IPC.chatsSendMessage, id, request),
     generation: (id: string): Promise<GenerationInfo> => invoke<GenerationInfo>(IPC.chatsGeneration, id),
     cancel: (id: string): Promise<ChatState> => invoke<ChatState>(IPC.chatsCancel, id),
+    toolPermission: (id: string, toolCallId: string, approved: boolean): Promise<ChatState> =>
+      invoke<ChatState>(IPC.chatsToolPermission, id, toolCallId, approved),
     remove: (id: string): Promise<void> => invoke<void>(IPC.chatsDelete, id),
     /** Subscribe to chat events. Returns an unsubscribe function. */
     onEvent: (callback: (envelope: ChatEventEnvelope) => void): (() => void) => {

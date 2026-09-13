@@ -1,4 +1,4 @@
-import { Injectable, signal } from '@angular/core';
+import { Injectable, computed, signal } from '@angular/core';
 import type {
   ChatEvent,
   ChatState,
@@ -8,6 +8,7 @@ import type {
   ModelInfo,
   SerializedMessage,
   Settings,
+  ToolPermissionRequest,
   VolumeMount,
 } from '../../../shared/contract';
 import { bridge } from './lidecode-bridge';
@@ -32,6 +33,8 @@ export interface CreateChatOptions {
   model: string;
   projectName: string;
   allowWeb: boolean;
+  /** Offer the host-machine tools (`host_bash`, ...) to the model. Defaults to true. */
+  hostTools: boolean;
   temperature?: number;
   systemPromptExt?: string;
   /** Host directory mounts, as `[hostPath, containerPath, mode?]` entries. */
@@ -106,6 +109,18 @@ export class ChatStore {
   readonly cost = signal(0);
   readonly docker = signal<DockerStatus | null>(null);
   readonly notice = signal<Notice | null>(null);
+
+  /**
+   * Host-tool calls waiting for the user's approval, oldest first. The model may
+   * issue several tool calls at once, so more than one request can be
+   * outstanding; the view answers the first one.
+   */
+  readonly permissionQueue = signal<ToolPermissionRequest[]>([]);
+
+  /** The permission request currently awaiting an answer, if any. */
+  readonly permissionRequest = computed<ToolPermissionRequest | null>(
+    () => this.permissionQueue()[0] ?? null,
+  );
 
   private unsubscribe?: () => void;
   private pollTimer?: ReturnType<typeof setTimeout>;
@@ -227,13 +242,30 @@ export class ChatStore {
       case 'tool_finished':
         this.append({ kind: 'assistant', text: '[tool result] ' + event.name + ' finished' });
         break;
+      case 'tool_permission_request':
+        this.busy.set(true);
+        this.status.set('waiting for approval: ' + event.name);
+        this.append({
+          kind: 'assistant',
+          text: '[permission] ' + event.name + ' is waiting for your approval',
+        });
+        this.permissionQueue.update((queue) => [
+          ...queue,
+          { id: event.id, name: event.name, arguments: event.arguments },
+        ]);
+        break;
+      case 'tool_permission_resolved':
+        this.permissionQueue.update((queue) => queue.filter((entry) => entry.id !== event.id));
+        break;
       case 'turn_finished':
         void this.finishTurn();
         break;
       case 'error':
+        this.permissionQueue.set([]);
         this.append({ kind: 'error', text: 'Error: ' + event.message });
         break;
       case 'closed':
+        this.permissionQueue.set([]);
         this.chatId.set(null);
         this.busy.set(false);
         this.status.set('chat closed');
@@ -242,6 +274,7 @@ export class ChatStore {
   }
 
   private async finishTurn(): Promise<void> {
+    this.permissionQueue.set([]);
     this.liveText.set('');
     this.liveThinking.set('');
     const id = this.chatId();
@@ -313,6 +346,7 @@ export class ChatStore {
   /** Start a new chat (and its sandbox container) from the dialog's values. */
   async createChat(options: CreateChatOptions): Promise<boolean> {
     this.stopPolling();
+    this.permissionQueue.set([]);
     this.liveText.set('');
     this.liveThinking.set('');
     this.bubbles.set([]);
@@ -322,6 +356,7 @@ export class ChatStore {
       model: options.model,
       project_name: options.projectName.length > 0 ? options.projectName : 'test-project',
       allow_web: options.allowWeb,
+      host_tools: options.hostTools,
     };
     if (options.temperature !== undefined) {
       request.temperature = options.temperature;
@@ -360,6 +395,7 @@ export class ChatStore {
       return;
     }
     this.stopPolling();
+    this.permissionQueue.set([]);
     this.liveText.set('');
     this.liveThinking.set('');
     try {
@@ -386,6 +422,27 @@ export class ChatStore {
     }
   }
 
+  /**
+   * Answer the oldest pending host-tool permission request. Denying is safe:
+   * the engine reports the denial back to the model and the turn continues.
+   */
+  async respondToPermission(approved: boolean): Promise<void> {
+    const id = this.chatId();
+    const request = this.permissionRequest();
+    if (!id || request === null) {
+      return;
+    }
+    // Drop it immediately so the buttons cannot be pressed twice.
+    this.permissionQueue.update((queue) => queue.filter((entry) => entry.id !== request.id));
+    try {
+      await bridge().chats.toolPermission(id, request.id, approved);
+    } catch (error: unknown) {
+      // The usual cause is that the turn was cancelled first, which already
+      // denies the request, so the failure is reported softly.
+      this.notify('Permission response could not be delivered: ' + errorMessage(error), 'error');
+    }
+  }
+
   async deleteChat(): Promise<void> {
     const id = this.chatId();
     if (!id) {
@@ -393,6 +450,7 @@ export class ChatStore {
     }
     this.stopPolling();
     this.chatId.set(null);
+    this.permissionQueue.set([]);
     this.liveText.set('');
     this.liveThinking.set('');
     this.bubbles.set([]);
@@ -415,6 +473,7 @@ export class ChatStore {
     if (!id || message.length === 0) {
       return;
     }
+    this.permissionQueue.set([]);
     this.append({ kind: 'user', text: message });
     this.busy.set(true);
     try {

@@ -80,3 +80,47 @@
   font: var(--mat-sys-body-small);
   color: var(--mat-sys-on-surface-variant);
 }
+
+/* Host-tool approval prompt */
+.bubble.approval {
+  align-self: flex-start;
+  max-width: min(90%, 60rem);
+  border: 1px solid var(--mat-sys-outline-variant);
+}
+
+.approval-title {
+  display: block;
+}
+
+.approval-title code {
+  font: var(--mat-sys-body-small);
+  background: var(--mat-sys-surface-container-high);
+  border-radius: var(--mat-sys-corner-extra-small);
+  padding: 0 0.2rem;
+}
+
+.approval-arguments {
+  margin: 0.4rem 0;
+  padding: 0.5rem 0.7rem;
+  max-height: 12rem;
+  overflow: auto;
+  background: var(--mat-sys-surface-container-highest);
+  border-radius: var(--mat-sys-corner-small);
+  font-family: monospace;
+  font-size: 0.8rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.approval-queued {
+  display: block;
+  font: var(--mat-sys-body-small);
+  color: var(--mat-sys-on-surface-variant);
+}
+
+.approval-actions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+  margin-top: 0.4rem;
+}

@@ -14,6 +14,25 @@
       <app-message-bubble [bubble]="bubble"></app-message-bubble>
     }
 
+    @if (store.permissionRequest(); as request) {
+      <div class="bubble approval">
+        <span class="meta">permission required</span>
+        <span class="approval-title">
+          The agent wants to run <code>{{ request.name }}</code> on your machine:
+        </span>
+        <pre class="approval-arguments">{{ request.arguments }}</pre>
+        @if (store.permissionQueue().length > 1) {
+          <span class="approval-queued">
+            {{ store.permissionQueue().length - 1 }} more request(s) waiting
+          </span>
+        }
+        <div class="approval-actions">
+          <button mat-stroked-button type="button" (click)="denyPermission()">Deny</button>
+          <button mat-flat-button type="button" (click)="approvePermission()">Approve</button>
+        </div>
+      </div>
+    }
+
     @if (store.liveThinking().length > 0) {
       <div class="bubble assistant thinking">
         <span class="meta">thinking</span>

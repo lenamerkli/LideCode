@@ -26,6 +26,7 @@ export interface LidecodeBridge {
     sendMessage(id: string, request: SendMessageRequest): Promise<ChatState>;
     generation(id: string): Promise<GenerationInfo>;
     cancel(id: string): Promise<ChatState>;
+    toolPermission(id: string, toolCallId: string, approved: boolean): Promise<ChatState>;
     remove(id: string): Promise<void>;
     onEvent(callback: (envelope: ChatEventEnvelope) => void): () => void;
   };

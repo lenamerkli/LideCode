@@ -28,9 +28,26 @@
     }
   </mat-form-field>
 
-  <mat-slide-toggle formControlName="allowWeb" class="allow-web">
-    Allow web search
-  </mat-slide-toggle>
+  <div class="permissions">
+    <span class="permissions-title">Permissions</span>
+
+    <mat-slide-toggle formControlName="allowWeb" class="allow-web">
+      Allow web search
+    </mat-slide-toggle>
+
+    <mat-slide-toggle formControlName="hostTools" class="allow-host">
+      Allow host machine tools
+    </mat-slide-toggle>
+
+    <p class="hint">
+      <mat-icon svgIcon="warning"></mat-icon>
+      <span>
+        Host tools (<code>host_bash</code>, <code>host_read_file</code>, <code>copy_host_to_docker</code>, …)
+        run on your own machine, outside the sandbox. Every call is shown to you and needs your approval
+        before it runs.
+      </span>
+    </p>
+  </div>
 
   <mat-expansion-panel class="mounts" [expanded]="mounts.length > 0">
     <mat-expansion-panel-header>

@@ -6,14 +6,17 @@
  * `LIDECODE_SMOKE_DOCKER=1` is set (building the sandbox image takes minutes).
  */
 
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { configurePaths } from '../src/config.js';
 import { ApiError, Engine } from '../src/engine.js';
 import { Chat, volumeArgument } from '../src/chat.js';
+import { MODELS } from '../src/models.js';
+import { hostBash, hostReadFile, hostReplaceInFile, hostWriteToFile } from '../src/host_tools.js';
 import { deleteSavedChat, deriveTitle, listSavedChats, loadSavedChat, saveSavedChat } from '../src/persistence.js';
-import type { SavedChat, SerializedMessage } from '../shared/contract.js';
+import { ToolCall, ToolCallFunction, ToolMessage } from '../src/types.js';
+import type { ChatEvent, SavedChat, SerializedMessage } from '../shared/contract.js';
 
 let failures = 0;
 
@@ -68,6 +71,24 @@ async function main(): Promise<void> {
     () => engine.createChat({ model: first?.name, project_name: 'p', env: { A: 1 } }));
   await expectApiError('createChat rejects malformed external_tools', 400,
     () => engine.createChat({ model: first?.name, project_name: 'p', external_tools: [{ url: 'http://x' }] }));
+  await expectApiError('createChat rejects a non-boolean host_tools', 400,
+    () => engine.createChat({ model: first?.name, project_name: 'p', host_tools: 'yes' }));
+  await expectApiError('createChat rejects an external tool that shadows a host tool', 400,
+    () => engine.createChat({
+      model: first?.name,
+      project_name: 'p',
+      external_tools: [{
+        url: 'http://x',
+        definition: {
+          type: 'function',
+          function: {
+            name: 'host_bash',
+            description: 'shadow',
+            parameters: { type: 'object', properties: {} },
+          },
+        },
+      }],
+    }));
   await expectApiError('getState rejects an unknown chat', 404, () => Promise.resolve(engine.getState('missing')));
   await expectApiError('openChat rejects an unknown chat', 404, () => engine.openChat('missing'));
   await expectApiError('getGeneration rejects an unknown chat', 404,
@@ -75,6 +96,8 @@ async function main(): Promise<void> {
   await expectApiError('sendMessage rejects an unknown chat', 404,
     () => Promise.resolve(engine.sendMessage('missing', { message: 'hi' })));
   await expectApiError('deleteChat rejects an unknown chat', 404, () => engine.deleteChat('missing'));
+  await expectApiError('resolveToolPermission rejects an unknown chat', 404,
+    () => Promise.resolve(engine.resolveToolPermission('missing', 'c1', true)));
 
   let eventCount = 0;
   const unsubscribe = engine.subscribe(() => {
@@ -90,6 +113,58 @@ async function main(): Promise<void> {
     volumeArgument('/host/data', '/home/agent/data', 'ro') === '/host/data:/home/agent/data:ro');
   check('volumeArgument appends an explicit read-write mode',
     volumeArgument('/host/data', '/home/agent/data', 'rw') === '/host/data:/home/agent/data:rw');
+
+  // --- host tools (pure, no Docker) -----------------------------------------
+  const hostDir = mkdtempSync(join(tmpdir(), 'lidecode-host-'));
+  const hostFile = join(hostDir, 'sample.txt');
+  const writeResult = await hostWriteToFile({ path: hostFile, content: 'alpha\nbeta\ngamma\n' });
+  check('hostWriteToFile creates the file and reports its size',
+    writeResult === 'Wrote 17 characters to ' + hostFile
+    && readFileSync(hostFile, 'utf8') === 'alpha\nbeta\ngamma\n');
+  const readResult = await hostReadFile({ path: hostFile, start_line: 1, end_line: 1, start_char: 0, end_char: 0 });
+  check('hostReadFile returns the selected line range', readResult.includes('<content>alpha\n</content>'));
+  const missingResult = await hostReadFile({ path: join(hostDir, 'missing.txt') });
+  check('hostReadFile reports a missing file',
+    missingResult === 'File not found: ' + join(hostDir, 'missing.txt'));
+  const replaceResult = await hostReplaceInFile({ path: hostFile, search: 'beta', replace: 'BETA' });
+  check('hostReplaceInFile replaces literal text',
+    replaceResult.includes('Made 1 replacement(s)') && readFileSync(hostFile, 'utf8').includes('BETA'));
+  const bashResult = await hostBash({ command: 'echo host-ok' });
+  check('hostBash returns the command output',
+    bashResult.includes('host-ok') && bashResult.includes('<returncode>0</returncode>'));
+
+  // --- host tool permission gate (pure, no Docker) ---------------------------
+  const gatedModel = MODELS.find((candidate) => candidate.name === first?.name);
+  if (gatedModel !== undefined) {
+    const gated = new Chat(gatedModel, undefined, 'p', [], true, undefined, undefined, true);
+    const events: ChatEvent[] = [];
+    gated.subscribe((event) => events.push(event));
+    const messagesBefore = gated.conversation.messages.length;
+    const pending = gated.call_tool(new ToolCall('perm-1', new ToolCallFunction('host_bash', '{"command":"echo should-not-run"}')));
+    const request = events.find((event) => event.type === 'tool_permission_request');
+    check('a host tool call asks the user for permission first',
+      request !== undefined
+      && request.type === 'tool_permission_request'
+      && request.name === 'host_bash'
+      && request.id === 'perm-1');
+    check('a host tool call does not run before the user answers',
+      gated.conversation.messages.length === messagesBefore);
+    check('resolving an unknown permission request is rejected',
+      gated.resolve_tool_permission('nope', true) === false);
+    check('resolving a pending permission request succeeds',
+      gated.resolve_tool_permission('perm-1', false) === true);
+    await pending;
+    const lastMessage = gated.conversation.messages[gated.conversation.messages.length - 1];
+    check('a denied host tool call reports the denial back to the model',
+      lastMessage instanceof ToolMessage && lastMessage.content.includes('denied by the user'));
+    check('the permission resolution is announced',
+      events.some((event) => event.type === 'tool_permission_resolved' && event.approved === false));
+    check('answering the same request twice is rejected',
+      gated.resolve_tool_permission('perm-1', true) === false);
+    gated.close();
+  } else {
+    console.log('skip - host tool permission gate (no matching model)');
+  }
 
   if (process.env['LIDECODE_SMOKE_DOCKER'] === '1' && first !== undefined) {
     const state = await engine.createChat({ model: first.name, project_name: 'smoke' });
@@ -134,6 +209,7 @@ async function main(): Promise<void> {
       model: first.name,
       cost: 1.25,
       allow_web: true,
+      host_tools: true,
       external_tools: [],
       volumes: [
         ['/host/data', '/home/agent/data', 'ro'],
@@ -164,6 +240,12 @@ async function main(): Promise<void> {
     check('snapshot round-trips volume mounts with their access mode',
       JSON.stringify(roundTrip.volumes)
       === JSON.stringify([['/host/data', '/home/agent/data', 'ro'], ['/host/src', '/home/agent/src']]));
+    check('snapshot round-trips the host_tools flag', roundTrip.host_tools === true);
+
+    const legacyDoc: SavedChat = { ...doc };
+    delete legacyDoc.host_tools;
+    check('a chat saved before host tools existed restores with them disabled',
+      Chat.fromSnapshot(legacyDoc).toSnapshot().host_tools === false);
 
     const opened = await engine.openChat('smoke-chat-1');
     check('Engine.openChat rehydrates a saved chat', opened.id === 'smoke-chat-1' && opened.cost === 1.25);

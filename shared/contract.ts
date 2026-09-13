@@ -17,6 +17,7 @@ export const IPC = {
   chatsGeneration: 'chats:generation',
   chatsCancel: 'chats:cancel',
   chatsDelete: 'chats:delete',
+  chatsToolPermission: 'chats:toolPermission',
   chatsEvent: 'chats:event',
   settingsGet: 'settings:get',
   settingsSet: 'settings:set',
@@ -38,6 +39,8 @@ export type ChatEvent =
   | { type: 'generation_finished'; finish_reason: string | null; tool_calls: { id: string; name: string; arguments: string }[] }
   | { type: 'tool_started'; id: string; name: string }
   | { type: 'tool_finished'; id: string; name: string }
+  | { type: 'tool_permission_request'; id: string; name: string; arguments: string }
+  | { type: 'tool_permission_resolved'; id: string; approved: boolean }
   | { type: 'turn_finished' }
   | { type: 'error'; message: string }
   | { type: 'closed' };
@@ -55,6 +58,16 @@ export interface ModelInfo {
   supports_vision: boolean;
   supports_tool_calls: boolean;
   max_context: number;
+}
+
+/** A pending request for the user to approve or deny one host-tool execution. */
+export interface ToolPermissionRequest {
+  /** Tool-call id, echoed back when the decision is submitted. */
+  id: string;
+  /** Tool name, e.g. `host_bash`. */
+  name: string;
+  /** Raw JSON arguments as produced by the model, shown verbatim to the user. */
+  arguments: string;
 }
 
 /** One message of a serialized conversation, as produced by `Message.toJSON()`. */
@@ -110,6 +123,7 @@ export interface CreateChatRequest {
   volumes?: VolumeMount[];
   env?: Record<string, string>;
   allow_web?: boolean;
+  host_tools?: boolean;
   system_prompt_ext?: string;
   tools_prompt_ext?: string;
   external_tools?: ExternalToolInput[];
@@ -152,6 +166,7 @@ export interface SavedChat {
   temperature?: number;
   cost: number;
   allow_web: boolean;
+  host_tools?: boolean;
   system_prompt_ext?: string;
   tools_prompt_ext?: string;
   external_tools: ExternalToolInput[];

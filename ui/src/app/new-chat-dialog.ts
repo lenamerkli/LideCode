@@ -27,6 +27,7 @@ export interface NewChatDialogData {
   defaultModel: string;
   defaultProjectName: string;
   defaultAllowWeb: boolean;
+  defaultHostTools: boolean;
 }
 
 /** Form value returned by the dialog (the shell feeds it to `ChatStore.createChat`). */
@@ -72,6 +73,7 @@ export class NewChatDialog {
     model: [this.data.defaultModel, Validators.required],
     projectName: [this.data.defaultProjectName, Validators.required],
     allowWeb: [this.data.defaultAllowWeb],
+    hostTools: [this.data.defaultHostTools],
     systemPromptExt: [''],
     temperature: this.formBuilder.control<number | null>(null, [
       Validators.min(0),
@@ -117,6 +119,7 @@ export class NewChatDialog {
       model: value.model ?? '',
       projectName: (value.projectName ?? '').trim(),
       allowWeb: value.allowWeb ?? false,
+      hostTools: value.hostTools ?? true,
     };
     if (value.temperature !== null) {
       result.temperature = value.temperature;

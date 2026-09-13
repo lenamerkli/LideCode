@@ -10,13 +10,22 @@ import {
 import {execFile} from "node:child_process";
 import {
   DEFAULT_TOOLS,
-  ExternalTool,
+  ExternalTool, HOST_TOOLS, HOST_TOOL_NAMES, HOST_VIEWIMAGE_TOOL,
   Tool,
   ToolParameterProperty,
   ToolParameters,
   VIEWIMAGE_TOOL,
   WEBSEARCH_TOOL
 } from "./tool_definitions.js";
+import {
+  copyDockerToHost,
+  copyHostToDocker,
+  hostBash,
+  hostReadFile,
+  hostReplaceInFile,
+  hostViewImage,
+  hostWriteToFile,
+} from "./host_tools.js";
 import {build_system_prompt} from "./prompts.js";
 import {LLM, get_llm, GenerationHandle} from "./llm.js";
 import {MODELS} from "./models.js";
@@ -171,6 +180,7 @@ export class Chat {
   private _cost: number = 0
   private _access_token: string | undefined
   private readonly _allow_web: boolean
+  private readonly _host_tools: boolean
   private readonly _system_prompt_ext: string | undefined
   private readonly _tools_prompt_ext: string | undefined
   private _volumes: VolumeMount[] | undefined
@@ -184,12 +194,21 @@ export class Chat {
     'write_to_file': this.execute_write_to_file.bind(this),
     'replace_in_file': this.execute_replace_in_file.bind(this),
     'view_image': this.execute_view_image.bind(this),
-    'websearch': this.execute_websearch.bind(this)
+    'websearch': this.execute_websearch.bind(this),
+    'host_bash': hostBash,
+    'host_read_file': hostReadFile,
+    'host_write_to_file': hostWriteToFile,
+    'host_replace_in_file': hostReplaceInFile,
+    'host_view_image': this.execute_host_view_image.bind(this),
+    'copy_host_to_docker': (args) => copyHostToDocker(args, this._container_name),
+    'copy_docker_to_host': (args) => copyDockerToHost(args, this._container_name),
   }
   private readonly _external_tools: Record<string, ExternalTool> = {}
+  /** Resolvers of tool calls that are waiting for the user's approval. */
+  private _pending_permissions: Map<string, (approved: boolean) => void> = new Map()
   private _listeners: Set<(event: ChatEvent) => void> = new Set()
 
-  constructor(model: Model, temperature: number | undefined, project_name: string, external_tools: ExternalTool[], allow_web: boolean, system_prompt_ext: string | undefined, tools_prompt_ext: string | undefined) {
+  constructor(model: Model, temperature: number | undefined, project_name: string, external_tools: ExternalTool[], allow_web: boolean, system_prompt_ext: string | undefined, tools_prompt_ext: string | undefined, host_tools: boolean) {
     const timestamp = nowIso()
     this._id = randomUUID()
     this._title = ''
@@ -200,6 +219,7 @@ export class Chat {
     this._temperature = temperature
     this._project_name = project_name
     this._allow_web = allow_web
+    this._host_tools = host_tools
     this._system_prompt_ext = system_prompt_ext
     this._tools_prompt_ext = tools_prompt_ext
     this._ip= CONTAINER_IP_PREFIX + Math.floor(Math.random() * 254 + 1).toString()
@@ -216,6 +236,12 @@ export class Chat {
     }
     if (model.supports_vision) {
       this._tools.push(VIEWIMAGE_TOOL)
+    }
+    if (this._host_tools) {
+      this._tools.push(...HOST_TOOLS)
+    }
+    if (model.supports_vision && this._host_tools) {
+      this._tools.push(HOST_VIEWIMAGE_TOOL)
     }
     this._conversation = new Conversation([new SystemMessage(build_system_prompt(model, project_name, this._tools, [], [], this._system_prompt_ext, this._tools_prompt_ext))])
   }
@@ -426,6 +452,9 @@ export class Chat {
   }
 
   cancel_generation(): void {
+    const had_pending_permissions = this._pending_permissions.size > 0
+    // Deny tool calls that are waiting on approval, so their promises settle.
+    this.settle_pending_permissions()
     if (this._generation_handle) {
       const handle = this._generation_handle
       this._generation_handle = undefined
@@ -434,6 +463,11 @@ export class Chat {
       // rejection is handled and the generation callback chain is stopped.
       handle.done.catch(() => {})
       // Suppress the automatic follow-up generation once pending tool calls finish.
+      this._generation_cancelled = true
+      this._emit({type: 'turn_finished'})
+    } else if (had_pending_permissions) {
+      // There is no stream left to cancel, but the denied tool calls must not
+      // start a follow-up generation once they settle.
       this._generation_cancelled = true
       this._emit({type: 'turn_finished'})
     }
@@ -467,8 +501,63 @@ export class Chat {
    * `cancel_generation()` first to stop generation.
    */
   close(): void {
+    // Closing is terminal: stop any follow-up generation and deny tool calls
+    // that are still waiting for the user's approval.
+    this._generation_cancelled = true
+    this.settle_pending_permissions()
     this._emit({type: 'closed'})
     this._listeners.clear()
+  }
+
+  /** Whether a tool call reaches the host machine and therefore needs approval. */
+  private is_host_tool(tool_name: string): boolean {
+    return HOST_TOOL_NAMES.has(tool_name)
+  }
+
+  /**
+   * Ask the user to approve a host-tool execution. The returned promise settles
+   * with the user's decision; a denied call is reported back to the model
+   * instead of being executed.
+   */
+  private request_tool_permission(tool_call: ToolCall): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
+      this._pending_permissions.set(tool_call.id, resolve)
+      this._emit({
+        type: 'tool_permission_request',
+        id: tool_call.id,
+        name: tool_call.function.name,
+        arguments: tool_call.function.arguments,
+      })
+    })
+  }
+
+  /**
+   * Settle a pending permission request with the user's decision. Returns
+   * whether a matching request was waiting; unknown ids are ignored, so a late
+   * or duplicate response can never break a turn.
+   */
+  resolve_tool_permission(tool_call_id: string, approved: boolean): boolean {
+    const resolve = this._pending_permissions.get(tool_call_id)
+    if (!resolve) {
+      return false
+    }
+    this._pending_permissions.delete(tool_call_id)
+    this._emit({type: 'tool_permission_resolved', id: tool_call_id, approved})
+    resolve(approved)
+    return true
+  }
+
+  /**
+   * Deny every outstanding permission request. Called when a turn is cancelled
+   * or the chat is closed: the pending `call_tool` promises must settle,
+   * otherwise `_waiting_for_tool_response` would never reach zero and the chat
+   * would stay busy forever.
+   */
+  private settle_pending_permissions(): void {
+    for (const [id, resolve] of this._pending_permissions) {
+      this._pending_permissions.delete(id)
+      resolve(false)
+    }
   }
 
   async call_tool(tool_call: ToolCall): Promise<void> {
@@ -481,15 +570,21 @@ export class Chat {
       } catch (error: unknown) {
         throw new Error('Failed to parse tool arguments: ' + (error instanceof Error ? error.message : String(error)))
       }
-      // if the tool is an external tool, send to the url and return the text response
-      const data = {name: tool_name, args: args, access_token: this._access_token, ip: this._ip, container: this._container_name, project: this._project_name, model: this._model}
-      const external_tool = this._external_tools[tool_name]
-      if (external_tool) {
-        result = await postRequest(external_tool.url, data, external_tool.headers)
+      // Host tools touch the user's machine, so they only run once the user has
+      // explicitly approved this specific call.
+      if (this.is_host_tool(tool_name) && !(await this.request_tool_permission(tool_call))) {
+        result = 'Permission to run the host tool `' + tool_name + '` was denied by the user. Do not retry it unless the user asks.'
       } else {
-      // else
-        const runner = this._tool_runners[tool_name]
-        result = runner ? await runner(args) : 'Error: `' + tool_name + '` is not a valid tool.'
+        // if the tool is an external tool, send to the url and return the text response
+        const data = {name: tool_name, args: args, access_token: this._access_token, ip: this._ip, container: this._container_name, project: this._project_name, model: this._model}
+        const external_tool = this._external_tools[tool_name]
+        if (external_tool) {
+          result = await postRequest(external_tool.url, data, external_tool.headers)
+        } else {
+        // else
+          const runner = this._tool_runners[tool_name]
+          result = runner ? await runner(args) : 'Error: `' + tool_name + '` is not a valid tool.'
+        }
       }
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error)
@@ -668,6 +763,15 @@ export class Chat {
     return "See the user message."
   }
 
+  async execute_host_view_image(args: Record<string, unknown>): Promise<string> {
+    const result = await hostViewImage(args)
+    if (typeof result === 'string') {
+      return result
+    }
+    this._conversation.push(new UserMessage([new TextContent('Result from the "host_view_image" tool call.'), new ImageContent(new Uint8Array(Buffer.from(result.base64, 'base64')))]))
+    return "See the user message."
+  }
+
   async execute_websearch(args: Record<string, unknown>): Promise<string> {
     if (!this._allow_web) {
       return 'Web search is not available: web access is disabled for this session.'
@@ -790,6 +894,7 @@ export class Chat {
       model: this._model.name,
       cost: this._cost,
       allow_web: this._allow_web,
+      host_tools: this._host_tools,
       external_tools: Object.values(this._external_tools).map((tool) => externalToolToInput(tool)),
       messages,
       created_at: this._created_at,
@@ -831,6 +936,7 @@ export class Chat {
       doc.allow_web,
       doc.system_prompt_ext,
       doc.tools_prompt_ext,
+      doc.host_tools === true,
     )
     chat._id = doc.id
     chat._title = doc.title

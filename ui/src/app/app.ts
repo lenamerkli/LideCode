@@ -101,6 +101,7 @@ export class App implements OnInit {
           defaultModel: this.store.selectedModel(),
           defaultProjectName: this.store.projectName(),
           defaultAllowWeb: true,
+          defaultHostTools: true,
         },
       })
       .afterClosed()

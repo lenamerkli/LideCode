@@ -27,6 +27,7 @@ export class ChatView {
       void this.store.bubbles();
       void this.store.liveText();
       void this.store.liveThinking();
+      void this.store.permissionRequest();
       void this.store.chatId();
       setTimeout(() => this.scrollToBottom());
     });
@@ -34,6 +35,14 @@ export class ChatView {
 
   protected send(text: string): void {
     void this.store.send(text);
+  }
+
+  protected approvePermission(): void {
+    void this.store.respondToPermission(true);
+  }
+
+  protected denyPermission(): void {
+    void this.store.respondToPermission(false);
   }
 
   private scrollToBottom(): void {
