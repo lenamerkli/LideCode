@@ -988,6 +988,26 @@ export class Chat {
     return this._project_name
   }
 
+  /** Whether the sandbox may reach the network and use the web tools. */
+  get allow_web(): boolean {
+    return this._allow_web
+  }
+
+  /** Whether the host-machine tools are offered to the model. */
+  get host_tools(): boolean {
+    return this._host_tools
+  }
+
+  /** Extra text appended to the default system prompt, if any. */
+  get system_prompt_ext(): string | undefined {
+    return this._system_prompt_ext
+  }
+
+  /** Host directories mounted into the sandbox, if any. */
+  get volumes(): VolumeMount[] | undefined {
+    return this._volumes
+  }
+
   /** Whether a generation or tool execution is currently in progress. */
   get busy(): boolean {
     return this._generation_handle !== undefined || this._waiting_for_tool_response > 0

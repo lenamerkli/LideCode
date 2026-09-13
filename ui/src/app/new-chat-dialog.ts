@@ -28,6 +28,12 @@ export interface NewChatDialogData {
   defaultProjectName: string;
   defaultAllowWeb: boolean;
   defaultHostTools: boolean;
+  /** True when the values were copied from the open chat (shows a note). */
+  prefilled?: boolean;
+  defaultTemperature?: number;
+  defaultSystemPromptExt?: string;
+  /** Host directories of the open chat, reused as the dialog's initial mounts. */
+  defaultMounts?: VolumeMount[];
 }
 
 /** Form value returned by the dialog (the shell feeds it to `ChatStore.createChat`). */
@@ -74,12 +80,14 @@ export class NewChatDialog {
     projectName: [this.data.defaultProjectName, Validators.required],
     allowWeb: [this.data.defaultAllowWeb],
     hostTools: [this.data.defaultHostTools],
-    systemPromptExt: [''],
-    temperature: this.formBuilder.control<number | null>(null, [
+    systemPromptExt: [this.data.defaultSystemPromptExt ?? ''],
+    temperature: this.formBuilder.control<number | null>(this.data.defaultTemperature ?? null, [
       Validators.min(0),
       Validators.max(2),
     ]),
-    mounts: this.formBuilder.array<MountForm>([]),
+    mounts: this.formBuilder.array<MountForm>(
+      (this.data.defaultMounts ?? []).map((mount) => this.createMountFromVolume(mount)),
+    ),
   });
 
   /** Append a mount row, pre-filling the container path for this project. */
@@ -139,11 +147,17 @@ export class NewChatDialog {
     this.dialogRef.close(result);
   }
 
-  private createMount(container: string): MountForm {
+  private createMount(container: string, host = '', readOnly = false): MountForm {
     return this.formBuilder.nonNullable.group({
-      host: ['', Validators.required],
+      host: [host, Validators.required],
       container: [container, [Validators.required, Validators.pattern(/^\//)]],
-      readOnly: [false],
+      readOnly: [readOnly],
     });
+  }
+
+  /** Build a form row from a persisted `[host, container, mode?]` volume mount. */
+  private createMountFromVolume(volume: VolumeMount): MountForm {
+    const [host, container, mode] = volume;
+    return this.createMount(container, host, mode === 'ro');
   }
 }

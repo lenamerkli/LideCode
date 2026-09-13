@@ -94,3 +94,7 @@ code {
   height: 1.1rem;
   font-size: 1.1rem;
 }
+
+.prefilled {
+  margin-bottom: 0.5rem;
+}

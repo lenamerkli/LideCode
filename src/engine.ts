@@ -232,8 +232,16 @@ export class Engine {
       temperature: chat.temperature,
       finished: !chat.busy,
       cost: chat.cost,
+      allow_web: chat.allow_web,
+      host_tools: chat.host_tools,
       messages: chat.conversation.messages.map((message) => message.toJSON() as SerializedMessage),
     };
+    if (chat.system_prompt_ext !== undefined) {
+      state.system_prompt_ext = chat.system_prompt_ext;
+    }
+    if (chat.volumes !== undefined) {
+      state.volumes = chat.volumes;
+    }
     if (chat.error !== undefined) {
       state.error = chat.error;
     }

@@ -1,6 +1,13 @@
 <h2 mat-dialog-title>New chat</h2>
 
 <mat-dialog-content [formGroup]="form" class="dialog-body">
+  @if (data.prefilled) {
+    <p class="hint prefilled">
+      <mat-icon svgIcon="copy"></mat-icon>
+      <span>Copied from the current chat. Adjust anything, or create the chat as is.</span>
+    </p>
+  }
+
   <mat-form-field>
     <mat-label>Model</mat-label>
     <mat-select formControlName="model" required>

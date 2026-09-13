@@ -210,6 +210,8 @@ async function main(): Promise<void> {
       cost: 1.25,
       allow_web: true,
       host_tools: true,
+      temperature: 0.5,
+      system_prompt_ext: 'Be terse.',
       external_tools: [],
       volumes: [
         ['/host/data', '/home/agent/data', 'ro'],
@@ -250,6 +252,12 @@ async function main(): Promise<void> {
     const opened = await engine.openChat('smoke-chat-1');
     check('Engine.openChat rehydrates a saved chat', opened.id === 'smoke-chat-1' && opened.cost === 1.25);
     check('Engine.openChat reports the restored messages', opened.messages.length === messages.length);
+    check('Engine.openChat exposes the flags used to pre-fill a new chat',
+      opened.allow_web === true && opened.host_tools === true
+      && opened.system_prompt_ext === 'Be terse.' && opened.temperature === 0.5);
+    check('Engine.openChat exposes the mounted directories',
+      JSON.stringify(opened.volumes)
+      === JSON.stringify([['/host/data', '/home/agent/data', 'ro'], ['/host/src', '/home/agent/src']]));
 
     await deleteSavedChat('smoke-chat-1');
     check('deleteSavedChat removes the chat', (await loadSavedChat('smoke-chat-1')) === null);

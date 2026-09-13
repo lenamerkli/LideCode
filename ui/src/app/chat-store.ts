@@ -101,6 +101,8 @@ export class ChatStore {
   readonly selectedModel = signal('');
   readonly projectName = signal('test-project');
   readonly chatId = signal<string | null>(null);
+  /** Create-time configuration of the open chat, or null when no chat is open. */
+  readonly currentSettings = signal<CreateChatOptions | null>(null);
   readonly bubbles = signal<Bubble[]>([]);
   readonly liveText = signal('');
   readonly liveThinking = signal('');
@@ -201,6 +203,27 @@ export class ChatStore {
     this.busy.set(!state.finished);
     this.cost.set(state.cost);
     this.status.set('id ' + state.id.slice(0, 8) + ' · ' + state.model + ' · cost ' + state.cost);
+    this.currentSettings.set(this.settingsFromState(state));
+  }
+
+  /** Map the create-time configuration of a chat state into dialog options. */
+  private settingsFromState(state: ChatState): CreateChatOptions {
+    const settings: CreateChatOptions = {
+      model: state.model,
+      projectName: state.project_name,
+      allowWeb: state.allow_web ?? true,
+      hostTools: state.host_tools ?? true,
+    };
+    if (state.temperature !== undefined) {
+      settings.temperature = state.temperature;
+    }
+    if (state.system_prompt_ext !== undefined) {
+      settings.systemPromptExt = state.system_prompt_ext;
+    }
+    if (state.volumes !== undefined) {
+      settings.volumes = state.volumes;
+    }
+    return settings;
   }
 
   private append(bubble: Bubble): void {
@@ -450,6 +473,7 @@ export class ChatStore {
     }
     this.stopPolling();
     this.chatId.set(null);
+    this.currentSettings.set(null);
     this.permissionQueue.set([]);
     this.liveText.set('');
     this.liveThinking.set('');

@@ -19,6 +19,17 @@
     New chat
   </button>
 
+  <button
+    mat-icon-button
+    type="button"
+    [disabled]="store.busy() || store.currentSettings() === null"
+    (click)="openNewChatWithSettings()"
+    matTooltip="New chat with the current settings"
+    aria-label="New chat with the current settings"
+  >
+    <mat-icon svgIcon="copy"></mat-icon>
+  </button>
+
   @if (store.busy()) {
     <button
       mat-icon-button

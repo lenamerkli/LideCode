@@ -95,6 +95,14 @@ export interface ChatState {
   cost: number;
   messages: SerializedMessage[];
   error?: string;
+  /**
+   * Create-time configuration, echoed back so the renderer can pre-fill a new
+   * chat from the current one (the "same settings" action in the UI).
+   */
+  allow_web?: boolean;
+  host_tools?: boolean;
+  system_prompt_ext?: string;
+  volumes?: VolumeMount[];
 }
 
 /** Streaming state of the current generation, equivalent to `GET /chats/:id/generation`. */

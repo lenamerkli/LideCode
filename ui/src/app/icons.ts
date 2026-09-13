@@ -48,6 +48,10 @@ export const ICONS: Readonly<Record<string, string>> = {
   folder: SVG(
     'M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z',
   ),
+  copy: SVG(
+    'M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2' +
+      '-2-2zm0 16H8V7h11v14z',
+  ),
 };
 
 /** Register every bundled icon on the given registry (idempotent). */

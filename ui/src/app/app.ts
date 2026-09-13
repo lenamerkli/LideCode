@@ -89,20 +89,39 @@ export class App implements OnInit {
       });
   }
 
-  protected openNewChat(): void {
+  /**
+   * Open the creation dialog. With `prefillCurrent` the settings of the open
+   * chat (model, project, permissions, temperature, prompt and mounts) are
+   * reused as the dialog's defaults.
+   */
+  protected openNewChat(prefillCurrent = false): void {
     if (this.store.busy()) {
       return;
+    }
+    const current = prefillCurrent ? this.store.currentSettings() : null;
+    const data: NewChatDialogData = {
+      models: this.store.models(),
+      defaultModel: current?.model ?? this.store.selectedModel(),
+      defaultProjectName: current?.projectName ?? this.store.projectName(),
+      defaultAllowWeb: current?.allowWeb ?? true,
+      defaultHostTools: current?.hostTools ?? true,
+    };
+    if (current !== null) {
+      data.prefilled = true;
+      if (current.temperature !== undefined) {
+        data.defaultTemperature = current.temperature;
+      }
+      if (current.systemPromptExt !== undefined) {
+        data.defaultSystemPromptExt = current.systemPromptExt;
+      }
+      if (current.volumes !== undefined && current.volumes.length > 0) {
+        data.defaultMounts = current.volumes;
+      }
     }
     this.dialog
       .open<NewChatDialog, NewChatDialogData, NewChatDialogResult>(NewChatDialog, {
         width: '34rem',
-        data: {
-          models: this.store.models(),
-          defaultModel: this.store.selectedModel(),
-          defaultProjectName: this.store.projectName(),
-          defaultAllowWeb: true,
-          defaultHostTools: true,
-        },
+        data,
       })
       .afterClosed()
       .subscribe((options) => {
@@ -110,6 +129,11 @@ export class App implements OnInit {
           void this.store.createChat(options);
         }
       });
+  }
+
+  /** Create a chat pre-filled with the settings of the open chat. */
+  protected openNewChatWithSettings(): void {
+    this.openNewChat(true);
   }
 
   protected openSettings(): void {

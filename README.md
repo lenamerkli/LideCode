@@ -54,6 +54,15 @@ the create flow; the host side is picked with `files.pickDirectory()` (a native
 `-v host:container:ro`; read-write mounts omit the mode so Docker applies its own
 `rw` default, and mounts persisted before read-only support keep working.
 
+Beside it, the toolbar's second **New chat** action (the copy icon, enabled while
+a chat is open) opens the same dialog pre-filled with the current chat's
+create-time settings: model, project name, permissions, temperature, extra
+system prompt and mounts. `ChatState` echoes those fields back
+(`src/engine.ts`), `ChatStore` keeps them in `currentSettings`, and
+`App.openNewChat(true)` maps them onto the dialog defaults. Settings that have no
+dialog control (`env`, `external_tools`, `tools_prompt_ext`) are not carried
+over.
+
 Note that `project_name` is **not** a mount: it only names the empty directory
 the container creates at `/home/agent/<name>` (`src/docker/app.py`).
 
