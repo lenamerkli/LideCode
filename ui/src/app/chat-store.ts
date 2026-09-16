@@ -239,12 +239,15 @@ export class ChatStore {
         this.liveText.set('');
         this.liveThinking.set('');
         this.busy.set(true);
+        this.status.set('waiting for the model…');
         break;
       case 'thinking':
         this.liveThinking.update((text) => text + event.delta);
+        this.status.set('thinking…');
         break;
       case 'text':
         this.liveText.update((text) => text + event.delta);
+        this.status.set('writing…');
         break;
       case 'generation_finished':
         this.liveText.set('');
@@ -264,6 +267,8 @@ export class ChatStore {
         break;
       case 'tool_finished':
         this.append({ kind: 'assistant', text: '[tool result] ' + event.name + ' finished' });
+        // The model is asked for a follow-up now; do not keep showing the tool.
+        this.status.set('waiting for the model…');
         break;
       case 'tool_permission_request':
         this.busy.set(true);
@@ -340,7 +345,9 @@ export class ChatStore {
     }
     try {
       const generation = await bridge().chats.generation(id);
-      if (generation.available) {
+      // The turn may have been cancelled or finished while this reply was in
+      // flight; never resurrect streamed text for a turn that is no longer busy.
+      if (this.busy() && generation.available) {
         const text = generation.text ?? '';
         const thinking = generation.thinking ?? '';
         if (text.length >= this.liveText().length) {
@@ -437,6 +444,8 @@ export class ChatStore {
     if (!id) {
       return;
     }
+    // Show the click immediately; `turn_finished` refreshes the status again.
+    this.status.set('stopping…');
     try {
       await bridge().chats.cancel(id);
     } catch (error: unknown) {

@@ -31,8 +31,8 @@ import {LLM, get_llm, GenerationHandle} from "./llm.js";
 import {MODELS} from "./models.js";
 import {deriveTitle} from "./persistence.js";
 import {join} from "node:path";
-import {chmod, mkdir, readFile, writeFile} from "node:fs/promises";
-import {randomBytes, randomUUID} from "node:crypto";
+import {chmod, mkdir, readdir, readFile, writeFile} from "node:fs/promises";
+import {createHash, randomBytes, randomUUID} from "node:crypto";
 import {getRequestWithHeaders, postRequest} from "./util.js";
 import {getPaths} from "./config.js";
 import type {ChatEvent, ExternalToolInput, SavedChat, SerializedMessage, VolumeMode, VolumeMount} from "../shared/contract.js";
@@ -42,6 +42,10 @@ export const CONTAINER_PREFIX = 'lidecode_'
 export const INTERNAL_PORT = 50000
 export const NETWORK_NAME = 'lidecode_net'
 export const CONTAINER_IP_PREFIX = '172.30.1.'
+/** Tool result recorded when a turn is cancelled while its tool is in flight. */
+export const CANCELLED_TOOL_RESULT = 'The tool call was cancelled by the user.'
+/** Image label holding the hash of the sandbox sources the image was built from. */
+const SOURCES_LABEL = 'lidecode.sources'
 // Environment variable used inside the container to enable/disable web access.
 export const ALLOW_WEB_ENV = 'ALLOW_WEB'
 // Web-related skill and script hidden from the agent when web access is disabled.
@@ -66,13 +70,23 @@ export function volumeArgument(host: string, container: string, mode: VolumeMode
  * so that no shell interpretation (and therefore no command injection) can
  * occur. Resolves with stdout, rejects on non-zero exit or timeout.
  */
-function run(command: string, args: string[], options?: {timeout?: number}): Promise<string> {
+function run(command: string, args: string[], options?: {timeout?: number; signal?: AbortSignal}): Promise<string> {
   return new Promise<string>((resolve, reject) => {
-    execFile(command, args, {
+    const execOptions: {maxBuffer: number; timeout: number; signal?: AbortSignal} = {
       maxBuffer: 100 * 1024 * 1024,
       timeout: options?.timeout ?? 300_000,
-    }, (error, stdout, stderr) => {
+    };
+    if (options?.signal !== undefined) {
+      execOptions.signal = options.signal;
+    }
+    execFile(command, args, execOptions, (error, stdout, stderr) => {
       if (error) {
+        // A cancelled turn aborts the child process; reject with the abort error
+        // so callers can tell it apart from a genuine failure.
+        if ((error as {name?: string}).name === 'AbortError') {
+          reject(error);
+          return;
+        }
         const message = error instanceof Error ? error.message : String(error);
         const details = stderr ? ' — ' + stderr.toString().trim() : '';
         reject(new Error(message + details));
@@ -81,6 +95,34 @@ function run(command: string, args: string[], options?: {timeout?: number}): Pro
       resolve(stdout.toString());
     });
   });
+}
+
+/**
+ * Hash of the Docker build context, stored as an image label so that a sandbox
+ * image built from older sources (e.g. before container-side cancellation) is
+ * rebuilt automatically. Generated caches are ignored so they cannot force a
+ * spurious rebuild.
+ */
+async function hashDockerContext(dir: string): Promise<string> {
+  const hash = createHash('sha256')
+  const walk = async (current: string): Promise<void> => {
+    const entries = (await readdir(current, {withFileTypes: true})).sort((a, b) => a.name.localeCompare(b.name))
+    for (const entry of entries) {
+      if (entry.name === '__pycache__' || entry.name.endsWith('.pyc')) {
+        continue
+      }
+      const full = join(current, entry.name)
+      if (entry.isDirectory()) {
+        hash.update('dir:' + entry.name + '\n')
+        await walk(full)
+      } else if (entry.isFile()) {
+        hash.update('file:' + entry.name + '\n')
+        hash.update(await readFile(full))
+      }
+    }
+  }
+  await walk(dir)
+  return hash.digest('hex')
 }
 
 
@@ -175,6 +217,8 @@ export class Chat {
   private readonly _container_name: string
   private _generation_handle: GenerationHandle | undefined
   private _generation_cancelled: boolean = false
+  /** Aborts the tool executions of the current turn; replaced by `begin_turn`. */
+  private _turn_abort: AbortController | undefined
   private _generation_error: string | undefined
   private _waiting_for_tool_response: number = 0
   private _cost: number = 0
@@ -188,20 +232,20 @@ export class Chat {
   private _container_started: boolean = false
   /** Hook invoked after any change worth persisting (set by the engine). */
   onChanged: (() => void) | undefined
-  private _tool_runners: Record<string, (args: Record<string, unknown>) => Promise<string>> = {
-    'bash': this.execute_bash.bind(this),
-    'read_file': this.execute_read_file.bind(this),
-    'write_to_file': this.execute_write_to_file.bind(this),
-    'replace_in_file': this.execute_replace_in_file.bind(this),
-    'view_image': this.execute_view_image.bind(this),
-    'websearch': this.execute_websearch.bind(this),
-    'host_bash': hostBash,
-    'host_read_file': hostReadFile,
-    'host_write_to_file': hostWriteToFile,
-    'host_replace_in_file': hostReplaceInFile,
-    'host_view_image': this.execute_host_view_image.bind(this),
-    'copy_host_to_docker': (args) => copyHostToDocker(args, this._container_name),
-    'copy_docker_to_host': (args) => copyDockerToHost(args, this._container_name),
+  private _tool_runners: Record<string, (args: Record<string, unknown>, signal: AbortSignal) => Promise<string>> = {
+    'bash': (args, signal) => this.execute_bash(args, signal),
+    'read_file': (args, signal) => this.execute_read_file(args, signal),
+    'write_to_file': (args, signal) => this.execute_write_to_file(args, signal),
+    'replace_in_file': (args, signal) => this.execute_replace_in_file(args, signal),
+    'view_image': (args, signal) => this.execute_view_image(args, signal),
+    'websearch': (args, signal) => this.execute_websearch(args, signal),
+    'host_bash': (args, signal) => hostBash(args, signal),
+    'host_read_file': (args) => hostReadFile(args),
+    'host_write_to_file': (args) => hostWriteToFile(args),
+    'host_replace_in_file': (args) => hostReplaceInFile(args),
+    'host_view_image': (args) => this.execute_host_view_image(args),
+    'copy_host_to_docker': (args, signal) => copyHostToDocker(args, this._container_name, signal),
+    'copy_docker_to_host': (args, signal) => copyDockerToHost(args, this._container_name, signal),
   }
   private readonly _external_tools: Record<string, ExternalTool> = {}
   /** Resolvers of tool calls that are waiting for the user's approval. */
@@ -247,13 +291,22 @@ export class Chat {
   }
 
   async ensure_docker_image(): Promise<void> {
-    const stdout = await run('docker', ['images']);
-    if (!stdout.includes(IMAGE_NAME)) {
-      const dockerDir = getPaths().dockerContextDir;
+    const dockerDir = getPaths().dockerContextDir;
+    const sources = await hashDockerContext(dockerDir);
+    const existing = await run('docker', ['images', '-q', IMAGE_NAME]);
+    if (existing.trim().length > 0) {
+      // Rebuild when the sandbox sources changed, so an image built before
+      // container-side cancellation does not keep serving stale endpoints.
+      const label = await run('docker', ['image', 'inspect', '-f', '{{index .Config.Labels "' + SOURCES_LABEL + '"}}', IMAGE_NAME]).catch(() => '');
+      if (label.trim() === sources) {
+        return;
+      }
+      console.log('Sandbox sources changed, rebuilding ' + IMAGE_NAME + ' from ' + dockerDir + '...');
+    } else {
       console.log('Docker image not found, building from ' + dockerDir + '...');
-      await run('docker', ['build', '-t', IMAGE_NAME, '-f', join(dockerDir, 'DOCKERFILE'), dockerDir], {timeout: 900_000})
-      console.log('Docker image built');
     }
+    await run('docker', ['build', '--label', SOURCES_LABEL + '=' + sources, '-t', IMAGE_NAME, '-f', join(dockerDir, 'DOCKERFILE'), dockerDir], {timeout: 900_000})
+    console.log('Docker image built');
   }
 
   async ensure_docker_network(): Promise<void> {
@@ -379,6 +432,31 @@ export class Chat {
     this._notifyChanged()
   }
 
+  /**
+   * Begin a new user turn. Called before the (potentially slow) sandbox start
+   * so that a cancellation issued while the container is still booting is not
+   * undone when the first generation of the turn starts. Ignored while a turn
+   * is already in flight.
+   */
+  begin_turn(): void {
+    if (this.busy) {
+      return
+    }
+    this._generation_cancelled = false
+    this._turn_abort = new AbortController()
+  }
+
+  /**
+   * Signal used to abort the tools of the current turn. Created lazily so a
+   * generation started without `begin_turn()` still gets a cancellable turn.
+   */
+  private tool_signal(): AbortSignal {
+    if (this._turn_abort === undefined) {
+      this._turn_abort = new AbortController()
+    }
+    return this._turn_abort.signal
+  }
+
   generate(): void {
     if (this._generation_handle) {
       throw new Error("Generation already in progress")
@@ -386,9 +464,11 @@ export class Chat {
     if (this._waiting_for_tool_response > 0) {
       throw new Error("Cannot start generation while waiting for tool response")
     }
+    if (this._generation_cancelled) {
+      throw new Error("Cannot start generation for a cancelled turn")
+    }
     const handle = this._llm.generate(this._conversation, this._tools)
     this._generation_handle = handle
-    this._generation_cancelled = false
     this._generation_error = undefined
     this._emit({type: 'generation_started'})
     // Forward the stream deltas of this generation to chat listeners. The
@@ -452,7 +532,11 @@ export class Chat {
   }
 
   cancel_generation(): void {
-    const had_pending_permissions = this._pending_permissions.size > 0
+    // Kill the tools of this turn first: an in-flight command must stop instead
+    // of running to completion while the turn is already being torn down.
+    if (this._turn_abort !== undefined) {
+      this._turn_abort.abort()
+    }
     // Deny tool calls that are waiting on approval, so their promises settle.
     this.settle_pending_permissions()
     if (this._generation_handle) {
@@ -462,15 +546,13 @@ export class Chat {
       // The `done` promise rejects on cancellation; attach a catch so the
       // rejection is handled and the generation callback chain is stopped.
       handle.done.catch(() => {})
-      // Suppress the automatic follow-up generation once pending tool calls finish.
-      this._generation_cancelled = true
-      this._emit({type: 'turn_finished'})
-    } else if (had_pending_permissions) {
-      // There is no stream left to cancel, but the denied tool calls must not
-      // start a follow-up generation once they settle.
-      this._generation_cancelled = true
-      this._emit({type: 'turn_finished'})
     }
+    // Mark the turn as cancelled even when there is no stream left to abort: a
+    // tool that is still executing must not start a follow-up generation once
+    // it settles, and a cancellation issued while the sandbox container is
+    // still starting must survive until `sendMessage` calls `generate()`.
+    this._generation_cancelled = true
+    this._emit({type: 'turn_finished'})
   }
 
   /**
@@ -504,6 +586,9 @@ export class Chat {
     // Closing is terminal: stop any follow-up generation and deny tool calls
     // that are still waiting for the user's approval.
     this._generation_cancelled = true
+    if (this._turn_abort !== undefined) {
+      this._turn_abort.abort()
+    }
     this.settle_pending_permissions()
     this._emit({type: 'closed'})
     this._listeners.clear()
@@ -563,39 +648,54 @@ export class Chat {
   async call_tool(tool_call: ToolCall): Promise<void> {
     const tool_name = tool_call.function.name
     let result: string
-    try {
-      let args: Record<string, unknown>
+    if (this._generation_cancelled) {
+      // The turn was cancelled before this call could start; answer it anyway,
+      // every tool call must have a response for the next request to be valid.
+      result = CANCELLED_TOOL_RESULT
+    } else {
       try {
-        args = JSON.parse(tool_call.function.arguments)
-      } catch (error: unknown) {
-        throw new Error('Failed to parse tool arguments: ' + (error instanceof Error ? error.message : String(error)))
-      }
-      // Host tools touch the user's machine, so they only run once the user has
-      // explicitly approved this specific call.
-      if (this.is_host_tool(tool_name) && !(await this.request_tool_permission(tool_call))) {
-        result = 'Permission to run the host tool `' + tool_name + '` was denied by the user. Do not retry it unless the user asks.'
-      } else {
-        // if the tool is an external tool, send to the url and return the text response
-        const data = {name: tool_name, args: args, access_token: this._access_token, ip: this._ip, container: this._container_name, project: this._project_name, model: this._model}
-        const external_tool = this._external_tools[tool_name]
-        if (external_tool) {
-          result = await postRequest(external_tool.url, data, external_tool.headers)
-        } else {
-        // else
-          const runner = this._tool_runners[tool_name]
-          result = runner ? await runner(args) : 'Error: `' + tool_name + '` is not a valid tool.'
+        let args: Record<string, unknown>
+        try {
+          args = JSON.parse(tool_call.function.arguments)
+        } catch (error: unknown) {
+          throw new Error('Failed to parse tool arguments: ' + (error instanceof Error ? error.message : String(error)))
         }
+        // Host tools touch the user's machine, so they only run once the user has
+        // explicitly approved this specific call.
+        if (this.is_host_tool(tool_name) && !(await this.request_tool_permission(tool_call))) {
+          result = 'Permission to run the host tool `' + tool_name + '` was denied by the user. Do not retry it unless the user asks.'
+        } else {
+          // if the tool is an external tool, send to the url and return the text response
+          const data = {name: tool_name, args: args, access_token: this._access_token, ip: this._ip, container: this._container_name, project: this._project_name, model: this._model}
+          const external_tool = this._external_tools[tool_name]
+          const signal = this.tool_signal()
+          if (external_tool) {
+            result = await postRequest(external_tool.url, data, external_tool.headers, signal)
+          } else {
+          // else
+            const runner = this._tool_runners[tool_name]
+            result = runner ? await runner(args, signal) : 'Error: `' + tool_name + '` is not a valid tool.'
+          }
+        }
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error)
+        if (!this._generation_cancelled) {
+          console.error('Tool call failed (' + tool_name + '): ' + message)
+        }
+        result = 'Error executing tool `' + tool_name + '`: ' + message
       }
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error)
-      result = 'Error executing tool `' + tool_name + '`: ' + message
-      console.error('Tool call failed (' + tool_name + '): ' + message)
+    }
+    // A cancelled turn always answers with the generic message, even when the
+    // tool finished just as the cancellation landed: the response must exist,
+    // the model never sees a cancelled tool result.
+    if (this._generation_cancelled) {
+      result = CANCELLED_TOOL_RESULT
     }
     this._conversation.messages.push(new ToolMessage(tool_call.id, result))
     this._notifyChanged()
   }
 
-  async execute_bash(args: Record<string, unknown>): Promise<string> {
+  async execute_bash(args: Record<string, unknown>, signal?: AbortSignal): Promise<string> {
     if (!args.command) {
       return 'The parameter "command" is required'
     }
@@ -619,7 +719,18 @@ export class Chat {
       return 'The parameter "max_chars" must be a number'
     }
     const max_chars: number = typeof args.max_chars === "number" ? args.max_chars : 1000000
-    const raw_response = await postRequest('http://' + this._ip + ':' + INTERNAL_PORT + '/bash', {command: command, timeout: timeout, directory: directory, venv: venv, max_chars: max_chars}, await this.auth_headers())
+    const request_id = randomUUID()
+    let raw_response: string
+    try {
+      raw_response = await postRequest('http://' + this._ip + ':' + INTERNAL_PORT + '/bash', {command: command, timeout: timeout, directory: directory, venv: venv, max_chars: max_chars, request_id: request_id}, await this.auth_headers(), signal)
+    } catch (error: unknown) {
+      // A cancelled turn aborts this request; ask the sandbox to kill the
+      // command as well, otherwise it would keep running until its own timeout.
+      if (signal?.aborted) {
+        await this.cancel_container_bash(request_id)
+      }
+      throw error
+    }
     const response = JSON.parse(raw_response)
     if (response.error) {
       return response.error
@@ -634,7 +745,20 @@ export class Chat {
     return output
   }
 
-  async execute_read_file(args: Record<string, unknown>): Promise<string> {
+  /**
+   * Ask the sandbox to kill a bash command that is still running. Best effort:
+   * the request is sent without the turn's abort signal and failures are only
+   * logged, because the turn is already being cancelled.
+   */
+  private async cancel_container_bash(request_id: string): Promise<void> {
+    try {
+      await postRequest('http://' + this._ip + ':' + INTERNAL_PORT + '/cancel', {request_id: request_id}, await this.auth_headers())
+    } catch (error: unknown) {
+      console.error('Failed to cancel container command ' + request_id + ': ' + (error instanceof Error ? error.message : String(error)))
+    }
+  }
+
+  async execute_read_file(args: Record<string, unknown>, signal?: AbortSignal): Promise<string> {
     if (!args.path) {
       return 'The parameter "path" is required'
     }
@@ -662,7 +786,7 @@ export class Chat {
       return 'The parameter "max_chars" must be a number'
     }
     const max_chars: number = typeof args.max_chars === "number" ? args.max_chars : 1000000
-    const raw_response = await postRequest('http://' + this._ip + ':' + INTERNAL_PORT + '/read_file', {path: path, start_line: start_line, end_line: end_line, start_char: start_char, end_char: end_char, max_chars: max_chars}, await this.auth_headers())
+    const raw_response = await postRequest('http://' + this._ip + ':' + INTERNAL_PORT + '/read_file', {path: path, start_line: start_line, end_line: end_line, start_char: start_char, end_char: end_char, max_chars: max_chars}, await this.auth_headers(), signal)
     const response = JSON.parse(raw_response)
     if (response.error) {
       return response.error
@@ -670,7 +794,7 @@ export class Chat {
     return '<path>' + path + '</path>\n<first_char>' + response.first_char + '</first_char>\n<last_char>' + response.last_char + '</last_char>\n<first_line>' + response.first_line + '</first_line>\n<last_line>' + response.last_line + '</last_line>\n<content>' + response.content + '</content>'
   }
 
-  async execute_write_to_file(args: Record<string, unknown>): Promise<string> {
+  async execute_write_to_file(args: Record<string, unknown>, signal?: AbortSignal): Promise<string> {
     if (!args.path) {
       return 'The parameter "path" is required'
     }
@@ -685,7 +809,7 @@ export class Chat {
       return 'The parameter "content" must be a string'
     }
     const content: string = args.content
-    const raw_response = await postRequest('http://' + this._ip + ':' + INTERNAL_PORT + '/write_to_file', {path: path, content: content}, await this.auth_headers())
+    const raw_response = await postRequest('http://' + this._ip + ':' + INTERNAL_PORT + '/write_to_file', {path: path, content: content}, await this.auth_headers(), signal)
     const response = JSON.parse(raw_response)
     if (response.error) {
       return response.error
@@ -693,7 +817,7 @@ export class Chat {
     return 'Wrote ' + response.characters + ' characters to ' + path
   }
 
-  async execute_replace_in_file(args: Record<string, unknown>): Promise<string> {
+  async execute_replace_in_file(args: Record<string, unknown>, signal?: AbortSignal): Promise<string> {
     if (!args.path) {
       return 'The parameter "path" is required'
     }
@@ -719,7 +843,7 @@ export class Chat {
       return 'The parameter "read" must be a boolean'
     }
     const read: boolean = typeof args.read === "boolean" ? args.read : false
-    const raw_response = await postRequest('http://' + this._ip + ':' + INTERNAL_PORT + '/replace_in_file', {path: path, search: search, replace: replace, read: read}, await this.auth_headers())
+    const raw_response = await postRequest('http://' + this._ip + ':' + INTERNAL_PORT + '/replace_in_file', {path: path, search: search, replace: replace, read: read}, await this.auth_headers(), signal)
     const response = JSON.parse(raw_response)
     if (response.error) {
       return response.error
@@ -745,7 +869,7 @@ export class Chat {
     return output
   }
 
-  async execute_view_image(args: Record<string, unknown>): Promise<string> {
+  async execute_view_image(args: Record<string, unknown>, signal?: AbortSignal): Promise<string> {
     if (!args.path) {
       return 'The parameter "path" is required'
     }
@@ -753,7 +877,7 @@ export class Chat {
       return 'The parameter "path" must be a string'
     }
     const path: string = args.path
-    const raw_response = await postRequest('http://' + this._ip + ':' + INTERNAL_PORT + '/view_image', {path: path}, await this.auth_headers())
+    const raw_response = await postRequest('http://' + this._ip + ':' + INTERNAL_PORT + '/view_image', {path: path}, await this.auth_headers(), signal)
     const response = JSON.parse(raw_response)
     if (response.error) {
       return response.error
@@ -772,7 +896,7 @@ export class Chat {
     return "See the user message."
   }
 
-  async execute_websearch(args: Record<string, unknown>): Promise<string> {
+  async execute_websearch(args: Record<string, unknown>, signal?: AbortSignal): Promise<string> {
     if (!this._allow_web) {
       return 'Web search is not available: web access is disabled for this session.'
     }
@@ -835,7 +959,7 @@ export class Chat {
       const raw_response = await getRequestWithHeaders('https://api.search.brave.com/res/v1/web/search?' + params.toString(), {
         'Accept': 'application/json',
         'X-Subscription-Token': process.env.BRAVE_SEARCH_API_KEY
-      })
+      }, signal)
       response = JSON.parse(raw_response)
     } catch (error: unknown) {
       return 'Web search request failed: ' + (error instanceof Error ? error.message : String(error))
@@ -1016,6 +1140,15 @@ export class Chat {
   /** Current generation handle, or undefined if no generation is active. */
   get generation_handle(): GenerationHandle | undefined {
     return this._generation_handle
+  }
+
+  /**
+   * Whether the current turn has been cancelled. Set by `cancel_generation()`
+   * and cleared by `begin_turn()`; used to avoid starting the generation of a
+   * turn that was stopped while its sandbox container was still booting.
+   */
+  get turn_cancelled(): boolean {
+    return this._generation_cancelled
   }
 
   /** Error message of the last failed generation, if any. */

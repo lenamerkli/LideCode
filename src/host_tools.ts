@@ -91,18 +91,27 @@ function exitCode(error: Error): number {
  * Run a command without a shell and resolve even on a non-zero exit code, so
  * callers can report stdout/stderr/returncode the way the container does.
  */
-function runCapture(command: string, args: string[], options?: { cwd?: string; timeout?: number }): Promise<ExecResult> {
-  const execOptions: { maxBuffer: number; cwd?: string; timeout?: number } = { maxBuffer: MAX_BUFFER };
+function runCapture(command: string, args: string[], options?: { cwd?: string; timeout?: number; signal?: AbortSignal | undefined }): Promise<ExecResult> {
+  const execOptions: { maxBuffer: number; cwd?: string; timeout?: number; signal?: AbortSignal | undefined } = { maxBuffer: MAX_BUFFER };
   if (options?.cwd !== undefined) {
     execOptions.cwd = options.cwd;
   }
   if (options?.timeout !== undefined) {
     execOptions.timeout = options.timeout;
   }
-  return new Promise<ExecResult>((resolve) => {
+  if (options?.signal !== undefined) {
+    execOptions.signal = options.signal;
+  }
+  return new Promise<ExecResult>((resolve, reject) => {
     execFile(command, args, execOptions, (error, stdout, stderr) => {
       if (error === null) {
         resolve({ stdout: stdout.toString(), stderr: stderr.toString(), code: 0, timedOut: false, failure: undefined });
+        return;
+      }
+      // Cancelling the turn kills the child process; reject so `call_tool` can
+      // record the generic cancellation response instead of a tool error.
+      if ((error as { name?: string }).name === 'AbortError') {
+        reject(error);
         return;
       }
       const code = (error as { code?: unknown }).code;
@@ -125,7 +134,7 @@ function truncate(output: string, maxChars: number): string {
  * `host_bash`: run a command on the host through bash, mirroring the container
  * response shape (`<returncode>`/`<stderr>`/`<stdout>`).
  */
-export async function hostBash(args: Record<string, unknown>): Promise<string> {
+export async function hostBash(args: Record<string, unknown>, signal?: AbortSignal): Promise<string> {
   const invalid = firstError(
     checkNonEmptyString(args, 'command'),
     checkOptionalNumber(args, 'timeout'),
@@ -142,7 +151,7 @@ export async function hostBash(args: Record<string, unknown>): Promise<string> {
   const venv = typeof args['venv'] === 'string' ? args['venv'] : '';
   const maxChars = typeof args['max_chars'] === 'number' ? args['max_chars'] : 100000;
   const script = venv.length > 0 ? 'source ' + venv + '/bin/activate && ' + command : command;
-  const result = await runCapture('bash', ['-lc', script], { cwd: directory, timeout: timeout * 1000 });
+  const result = await runCapture('bash', ['-lc', script], { cwd: directory, timeout: timeout * 1000, signal });
   if (result.timedOut) {
     return 'Error: the command timed out after ' + timeout + ' second(s).';
   }
@@ -335,8 +344,8 @@ export async function hostReplaceInFile(args: Record<string, unknown>): Promise<
 // Copies between the host and the sandbox container
 // ---------------------------------------------------------------------------
 
-async function dockerCopy(source: string, destination: string): Promise<string> {
-  const result = await runCapture('docker', ['cp', source, destination]);
+async function dockerCopy(source: string, destination: string, signal?: AbortSignal): Promise<string> {
+  const result = await runCapture('docker', ['cp', source, destination], { signal });
   if (result.timedOut) {
     return 'Error: docker cp timed out.';
   }
@@ -351,21 +360,21 @@ async function dockerCopy(source: string, destination: string): Promise<string> 
 }
 
 /** `copy_host_to_docker`: `docker cp <source> <container>:<destination>`. */
-export async function copyHostToDocker(args: Record<string, unknown>, containerName: string): Promise<string> {
+export async function copyHostToDocker(args: Record<string, unknown>, containerName: string, signal?: AbortSignal): Promise<string> {
   const invalid = firstError(checkNonEmptyString(args, 'source'), checkNonEmptyString(args, 'destination'));
   if (invalid !== undefined) {
     return invalid;
   }
-  return dockerCopy(args['source'] as string, containerName + ':' + (args['destination'] as string));
+  return dockerCopy(args['source'] as string, containerName + ':' + (args['destination'] as string), signal);
 }
 
 /** `copy_docker_to_host`: `docker cp <container>:<source> <destination>`. */
-export async function copyDockerToHost(args: Record<string, unknown>, containerName: string): Promise<string> {
+export async function copyDockerToHost(args: Record<string, unknown>, containerName: string, signal?: AbortSignal): Promise<string> {
   const invalid = firstError(checkNonEmptyString(args, 'source'), checkNonEmptyString(args, 'destination'));
   if (invalid !== undefined) {
     return invalid;
   }
-  return dockerCopy(containerName + ':' + (args['source'] as string), args['destination'] as string);
+  return dockerCopy(containerName + ':' + (args['source'] as string), args['destination'] as string, signal);
 }
 
 // ---------------------------------------------------------------------------

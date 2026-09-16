@@ -469,6 +469,10 @@ export class Engine {
       }
       generate = request['generate'];
     }
+    // Begin the turn before the (potentially slow) container start, so a
+    // cancellation issued while it boots is not ignored by the generation
+    // that starts afterwards.
+    chat.begin_turn();
     // Chats restored from disk start their container lazily, on first use.
     try {
       await chat.ensure_started();
@@ -476,7 +480,7 @@ export class Engine {
       throw new ApiError(500, `Failed to start the docker container: ${error instanceof Error ? error.message : String(error)}`);
     }
     chat.send_user_message(message);
-    if (generate) {
+    if (generate && !chat.turn_cancelled) {
       try {
         chat.generate();
       } catch (error: unknown) {

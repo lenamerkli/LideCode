@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { configurePaths } from '../src/config.js';
 import { ApiError, Engine } from '../src/engine.js';
-import { Chat, volumeArgument } from '../src/chat.js';
+import { Chat, CANCELLED_TOOL_RESULT, volumeArgument } from '../src/chat.js';
 import { MODELS } from '../src/models.js';
 import { hostBash, hostReadFile, hostReplaceInFile, hostWriteToFile } from '../src/host_tools.js';
 import { deleteSavedChat, deriveTitle, listSavedChats, loadSavedChat, saveSavedChat } from '../src/persistence.js';
@@ -164,6 +164,48 @@ async function main(): Promise<void> {
     gated.close();
   } else {
     console.log('skip - host tool permission gate (no matching model)');
+  }
+
+  // --- turn cancellation (pure, no Docker, no LLM) ---------------------------
+  const cancelModel = MODELS.find((candidate) => candidate.name === first?.name);
+  if (cancelModel !== undefined) {
+    const chat = new Chat(cancelModel, undefined, 'p', [], true, undefined, undefined, false);
+    const events: ChatEvent[] = [];
+    chat.subscribe((event) => events.push(event));
+    check('a fresh turn is not cancelled', chat.turn_cancelled === false);
+
+    // Cancelling with no live stream and no pending tool call (the container is
+    // still booting, or a tool is executing between two generations) must still
+    // mark the turn cancelled and announce its end; otherwise the pending
+    // `generate()` would start streaming anyway.
+    chat.cancel_generation();
+    check('cancel_generation marks the turn cancelled without a stream',
+      chat.turn_cancelled === true && events.some((event) => event.type === 'turn_finished'));
+    check('a cancelled turn refuses to start a generation', (() => {
+      try {
+        chat.generate();
+        return false;
+      } catch {
+        return true;
+      }
+    })());
+
+    // Cancelling must still answer every tool call: a request whose assistant
+    // message carries a `tool_calls` entry without a matching tool response is
+    // rejected by the provider, so cancel always records a generic response.
+    await chat.call_tool(new ToolCall('call-cancelled', new ToolCallFunction('bash', '{"command":"echo hi"}')));
+    const toolResponses = chat.conversation.messages.filter(
+      (message): message is ToolMessage => message instanceof ToolMessage);
+    const cancelledResponse = toolResponses.find((message) => message.toolCallId === 'call-cancelled');
+    check('a cancelled tool call still gets a response', cancelledResponse !== undefined);
+    check('the cancelled tool response is generic', cancelledResponse?.content === CANCELLED_TOOL_RESULT);
+
+    // A new turn clears the cancellation flag, so real generations can start.
+    chat.begin_turn();
+    check('begin_turn clears the cancellation flag', chat.turn_cancelled === false);
+    chat.close();
+  } else {
+    console.log('skip - turn cancellation (no matching model)');
   }
 
   if (process.env['LIDECODE_SMOKE_DOCKER'] === '1' && first !== undefined) {

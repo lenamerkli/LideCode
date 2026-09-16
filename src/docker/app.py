@@ -1,7 +1,9 @@
 import base64
 import mimetypes
 import os
+import signal
 import subprocess
+import threading
 from pathlib import Path
 from flask import Flask, request
 from secrets import compare_digest
@@ -21,6 +23,23 @@ if PROJECT_NAME:
 
 
 app = Flask(__name__)
+
+# Bash commands that are currently running, keyed by the client's request id, so
+# that a cancelled turn can kill them through /cancel. Flask's development
+# server is threaded, so /cancel is served while /bash is still blocked.
+_running_lock = threading.Lock()
+_running_commands = {}
+
+
+def _kill_process(process):
+    """Kill a process and everything it spawned."""
+    try:
+        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            process.kill()
+        except (ProcessLookupError, OSError):
+            pass
 
 
 @app.before_request
@@ -43,26 +62,60 @@ def bash():
     directory = data.get('directory', '/home/agent/')
     venv = data.get('venv', None)
     max_chars = data.get('max_chars', 100000)
+    request_id = data.get('request_id')
     if venv:
         command = f"source {venv}/bin/activate && {command}"
     if not command:
         return {'error': 'Missing command'}, 400
     try:
-        result = subprocess.run(
+        # A new session makes the process (and everything it spawns) killable as
+        # a group by /cancel.
+        process = subprocess.Popen(
             command,
             shell=True,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout,
-            cwd=directory
+            cwd=directory,
+            start_new_session=True,
         )
-        return {
-            'stdout': result.stdout,
-            'stderr': result.stderr,
-            'returncode': result.returncode
-        }
     except Exception as e:
         return {'error': str(e)}, 500
+    if request_id:
+        with _running_lock:
+            _running_commands[request_id] = process
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+        return {
+            'stdout': stdout,
+            'stderr': stderr,
+            'returncode': process.returncode
+        }
+    except subprocess.TimeoutExpired:
+        _kill_process(process)
+        process.communicate()
+        return {'error': f'Command timed out after {timeout} second(s).'}, 500
+    except Exception as e:
+        return {'error': str(e)}, 500
+    finally:
+        if request_id:
+            with _running_lock:
+                _running_commands.pop(request_id, None)
+
+
+@app.route('/cancel', methods=['POST'])
+def cancel():
+    """Kill a running /bash command; called when the user cancels a turn."""
+    data = request.get_json() or {}
+    request_id = data.get('request_id')
+    if not request_id:
+        return {'error': 'Missing request_id'}, 400
+    with _running_lock:
+        process = _running_commands.pop(request_id, None)
+    if process is None:
+        return {'status': 'not_running'}
+    _kill_process(process)
+    return {'status': 'cancelled'}
 
 
 @app.route('/read_file', methods=['POST'])
@@ -232,4 +285,5 @@ def scripts():
 
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=50000)
+    # Threaded so /cancel can be served while /bash is still running.
+    app.run(host='0.0.0.0', port=50000, threaded=True)
