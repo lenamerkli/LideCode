@@ -20,7 +20,7 @@ export function build_system_prompt(model: Model, project_name: string, tools: T
     switch (tool.function.name) {
       case "bash":
         prompt += "### bash\n"
-        prompt += format_tool_call({name: "bash", arguments: {command: "minecraft_source_extractor --version 26.2", timeout: 600, directory: "/home/agent/scripts"}}, model)
+        prompt += format_tool_call({name: "bash", arguments: {command: "minecraft_source_extractor --version 26.3", timeout: 600, directory: "/home/agent/scripts"}}, model)
         break
       case "read_file":
         prompt += "### read_file\n"

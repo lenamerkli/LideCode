@@ -6,7 +6,7 @@ Downloads Minecraft JARs from Mojang, de-obfuscates (for 1.x) or decompiles
 (for 26.x) using Fabric Loom's genSources task (Vineflower decompiler), and
 extracts the full Java source tree to ~/minecraft_source/{version}.
 
-Supports Minecraft full releases from 1.20.0 through 26.2.
+Supports Minecraft full releases from 1.20.0 through 26.3.
 
 Workflow (all versions)
 -----------------------
@@ -42,7 +42,7 @@ Requirements
 Usage
 -----
   python minecraft_source_extractor.py --version 1.21.4
-  python minecraft_source_extractor.py --version 26.2
+  python minecraft_source_extractor.py --version 26.3
   python minecraft_source_extractor.py --version 1.20.1 --output-dir /custom/path
   python minecraft_source_extractor.py --list-versions
 """
@@ -66,7 +66,7 @@ from typing import Dict, List, Optional, Tuple
 # Constants
 # -----------------------------------------------------------------------------
 
-LOADER = "0.19.3"          # Fabric Loader
+LOADER = "0.19.5"          # Fabric Loader
 LOOM = "1.17-SNAPSHOT"     # Fabric Loom Gradle plugin
 GRADLE = "9.5.1"           # Gradle wrapper
 
@@ -95,6 +95,7 @@ VERSIONS: Dict[str, Dict[str, object]] = {
     "26.1.1":   {"java": 25, "fab": "0.145.4+26.1.1"},
     "26.1.2":   {"java": 25, "fab": "0.155.2+26.1.2"},
     "26.2":     {"java": 25, "fab": "0.156.0+26.2"},
+    "26.3":     {"java": 25, "fab": "0.161.0+26.3"},
 }
 
 DEFAULT_OUTPUT_ROOT = Path.home() / "minecraft_source"
@@ -263,7 +264,7 @@ def _generate_gradle_project(project_dir: Path, mc: str, java: int, fab: str) ->
     )
 
     # Download wrapper assets from the reference Fabric example-mod repo
-    base = "https://raw.githubusercontent.com/FabricMC/fabric-example-mod/26.2"
+    base = "https://raw.githubusercontent.com/FabricMC/fabric-example-mod/26.3"
     _fetch_url(f"{base}/gradle/wrapper/gradle-wrapper.jar", wrapper_dir / "gradle-wrapper.jar")
     _fetch_url(f"{base}/gradlew", project_dir / "gradlew", executable=True)
 
@@ -397,7 +398,7 @@ def extract_sources(mc_version: str, output_root: Optional[Path] = None) -> int:
     Parameters
     ----------
     mc_version : str
-        Full release version (e.g. "1.21.4", "26.2").
+        Full release version (e.g. "1.21.4", "26.3").
     output_root : Path, optional
         Root directory.  Sources land in ``<output_root>/<mc_version>/``.
         Default: ``~/minecraft_source/``.
@@ -477,7 +478,7 @@ def extract_sources(mc_version: str, output_root: Optional[Path] = None) -> int:
 # -----------------------------------------------------------------------------
 
 def list_versions() -> None:
-    print("Supported Minecraft full releases (1.20.0 \E2\86\92 26.2):")
+    print("Supported Minecraft full releases (1.20.0 \E2\86\92 26.3):")
     for v in VERSIONS:
         tag = "  (26.x: no obfuscation)" if is_26(v) else ""
         print(f"  {v}{tag}")
@@ -487,7 +488,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Download and de-obfuscate Minecraft Java source code."
     )
-    p.add_argument("--version", help="Minecraft full release (e.g. 1.21.4, 26.2)")
+    p.add_argument("--version", help="Minecraft full release (e.g. 1.21.4, 26.3)")
     p.add_argument(
         "--output-dir",
         default=None,

@@ -4,7 +4,7 @@ The `minecraft_source_extractor` tool downloads Minecraft JARs from Mojang, de-o
 ## Usage
 ```bash
 /home/agent/scripts/minecraft_source_extractor --version 1.21.4
-/home/agent/scripts/minecraft_source_extractor --version 26.2
+/home/agent/scripts/minecraft_source_extractor --version 26.3
 ```
 
 ## Custom Output Directory
@@ -21,12 +21,12 @@ By default sources land in `/home/agent/minecraft_source/{version}`. Use `--outp
 ## Key Options
 | Option            | Description                                                                      |
 |-------------------|----------------------------------------------------------------------------------|
-| `--version`       | Minecraft full release version (e.g. 1.21.4, 26.2)                               |
+| `--version`       | Minecraft full release version (e.g. 1.21.4, 26.3)                               |
 | `--output-dir`    | Parent directory for extracted sources (default: `/home/agent/minecraft_source`) |
 | `--list-versions` | List all supported Minecraft versions and exit                                   |
 
 ## Supported Versions
-Minecraft full releases from **1.20.0** through **26.2**.
+Minecraft full releases from **1.20.0** through **26.3**.
 
 ## Workflow
 1. A temporary Fabric Loom Gradle project is generated.

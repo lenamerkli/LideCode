@@ -4,7 +4,7 @@ Minecraft Fabric Mod Template Generator
 =======================================
 Creates a fully pre-configured Fabric mod project, like the "Minecraft
 Development" IntelliJ IDEA plugin does, for any Minecraft full release from
-1.20.0 through 26.2.
+1.20.0 through 26.3.
 
 Features
 --------
@@ -26,7 +26,7 @@ from typing import Dict, List, Optional, Tuple
 SCRIPT_DIR = Path(__file__).resolve().parent
 ASSETS_DIR = SCRIPT_DIR / "assets"
 
-LOADER = "0.19.3"
+LOADER = "0.19.5"
 LOOM = "1.17-SNAPSHOT"
 GRADLE = "9.5.1"
 
@@ -54,9 +54,10 @@ VERSIONS = {
     "26.1.1": {"java": 25, "fab": "0.145.4+26.1.1"},
     "26.1.2": {"java": 25, "fab": "0.155.2+26.1.2"},
     "26.2":   {"java": 25, "fab": "0.156.0+26.2"},
+    "26.3":   {"java": 25, "fab": "0.161.0+26.3"},
 }
 
-IDENTIFIER_VERSIONS = {"1.21.11", "26.1", "26.1.1", "26.1.2", "26.2"}
+IDENTIFIER_VERSIONS = {"1.21.11", "26.1", "26.1.1", "26.1.2", "26.2", "26.3"}
 
 def is_26(ver):
     return ver.startswith("26")
@@ -356,7 +357,7 @@ def copy_asset(name, dest):
             "gradlew.bat": "gradlew.bat",
             "icon.png": "src/main/resources/assets/modid/icon.png",
         }
-        url = "https://raw.githubusercontent.com/FabricMC/fabric-example-mod/26.2/" + \
+        url = "https://raw.githubusercontent.com/FabricMC/fabric-example-mod/26.3/" + \
               fallback_map.get(name, name)
         try:
             urllib.request.urlretrieve(url, dest)
@@ -500,8 +501,8 @@ def check_java(required_version):
 
 def parse_args(argv):
     p = argparse.ArgumentParser(
-        description="Create a Fabric mod template for Minecraft 1.20.0 -> 26.2")
-    p.add_argument("--version", help="Minecraft full release (e.g. 1.21.4, 26.2)")
+        description="Create a Fabric mod template for Minecraft 1.20.0 -> 26.3")
+    p.add_argument("--version", help="Minecraft full release (e.g. 1.21.4, 26.3)")
     p.add_argument("--output-dir", default=".", help="Parent directory for the project")
     p.add_argument("--name", default="Example Mod", help="Mod display name")
     p.add_argument("--modid", default="modid", help="Mod id (lowercase letters/numbers)")
@@ -514,7 +515,7 @@ def parse_args(argv):
     return p.parse_args(argv)
 
 def list_versions():
-    print("Supported Minecraft full releases (1.20.0 -> 26.2):")
+    print("Supported Minecraft full releases (1.20.0 -> 26.3):")
     for v in VERSIONS:
         marker = "  (26.x: no mappings needed)" if is_26(v) else ""
         print(f"  {v}{marker}")

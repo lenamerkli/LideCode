@@ -1,5 +1,5 @@
 # Initialize a Minecraft Fabric Mod
-The `initialize_minecraft_fabric_mod` tool creates a fully pre-configured  Fabric mod project for any Minecraft full release from **1.20.0** through  **26.2** — equivalent to what the *Minecraft Development* IntelliJ IDEA  plugin generates.
+The `initialize_minecraft_fabric_mod` tool creates a fully pre-configured  Fabric mod project for any Minecraft full release from **1.20.0** through  **26.3** — equivalent to what the *Minecraft Development* IntelliJ IDEA  plugin generates.
 
 ## Usage
 ```bash
@@ -45,7 +45,7 @@ cd mymod
 ## Key Options
 | Option              | Description                                            |
 |---------------------|--------------------------------------------------------|
-| `--version`         | Minecraft full release (e.g. 1.21.4, 26.2)             |
+| `--version`         | Minecraft full release (e.g. 1.21.4, 26.3)             |
 | `--output-dir`      | Parent directory for the project (default: ".")        |
 | `--name`            | Mod display name (default: "Example Mod")              |
 | `--modid`           | Mod id, lowercase letters/numbers (default: "modid")   |
@@ -57,6 +57,6 @@ cd mymod
 
 ## Notes
 - **1.x versions** (1.20.0 – 1.21.11) use official Mojang mappings.
-- **26.x versions** (26.1 – 26.2) are not obfuscated, so no mappings are needed.
+- **26.x versions** (26.1 – 26.3) are not obfuscated, so no mappings are needed.
 - The Java target is set automatically to match the Minecraft version (17, 21, or 25 depending on the version).
 - Loom 1.17-SNAPSHOT requires Java ≥ 21 to run the Gradle daemon.

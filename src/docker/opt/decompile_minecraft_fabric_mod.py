@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Minecraft Fabric Mod Decompiler
-Decompiles Fabric mod JARs for Minecraft 1.20.0 - 26.2.
+Decompiles Fabric mod JARs for Minecraft 1.20.0 - 26.3.
 
 For obfuscated 1.x:
   1. Downloads Mojang client_mappings (ProGuard: official->obf)
@@ -392,7 +392,7 @@ def decompile(orig_jar, out_dir, version_id, cache):
 
 def main():
     p = argparse.ArgumentParser(description="Decompile a Minecraft Fabric mod JAR",
-                                epilog="Supports Minecraft 1.20.0-26.2.")
+                                epilog="Supports Minecraft 1.20.0-26.3.")
     p.add_argument("jar", nargs="?", help="Fabric mod JAR")
     p.add_argument("-v", "--version", help="MC version")
     p.add_argument("-o", "--output", type=Path, help="Output dir")

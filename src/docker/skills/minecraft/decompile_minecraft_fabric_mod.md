@@ -1,5 +1,5 @@
 # Decompile a Minecraft Fabric Mod
-The `decompile_minecraft_fabric_mod` tool decompiles a Fabric mod JAR into readable Java source code for any Minecraft full release from **1.20.0** through **26.2**.
+The `decompile_minecraft_fabric_mod` tool decompiles a Fabric mod JAR into readable Java source code for any Minecraft full release from **1.20.0** through **26.3**.
 
 ## Usage
 ```bash
@@ -28,7 +28,7 @@ If the version cannot be auto-detected (or you want to override it), use `-v`/`-
 | Option          | Description                                                       |
 |-----------------|-------------------------------------------------------------------|
 | `jar`           | Path to the Fabric mod JAR                                        |
-| `-v, --version` | Minecraft version (e.g. 1.21.4, 26.2)                             |
+| `-v, --version` | Minecraft version (e.g. 1.21.4, 26.3)                             |
 | `-o, --output`  | Output directory (default: `decompiled_<jar-name>`)               |
 | `--auto-detect` | Detect the version from `fabric.mod.json`                         |
 | `--cache-dir`   | Cache directory for downloaded mappings/CFR (default: `~/.cache`) |
@@ -37,6 +37,6 @@ If the version cannot be auto-detected (or you want to override it), use `-v`/`-
 
 ## Notes
 - **1.x versions** (1.20.0 – 1.21.11) are obfuscated. The tool downloads Mojang mappings and Fabric Intermediary, remaps the JAR with tiny-remapper, then decompiles with CFR.
-- **26.x versions** (26.1 – 26.2) are not obfuscated, so the JAR is decompiled directly with CFR.
+- **26.x versions** (26.1 – 26.3) are not obfuscated, so the JAR is decompiled directly with CFR.
 - Requires `java` on PATH (for CFR and tiny-remapper).
 - Non-class assets (JSON, PNG, textures, etc.) are extracted alongside the decompiled Java sources.
