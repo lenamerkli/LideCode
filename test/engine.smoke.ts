@@ -15,8 +15,9 @@ import { Chat, CANCELLED_TOOL_RESULT, volumeArgument } from '../src/chat.js';
 import { MODELS } from '../src/models.js';
 import { hostBash, hostReadFile, hostReplaceInFile, hostWriteToFile } from '../src/host_tools.js';
 import { deleteSavedChat, deriveTitle, listSavedChats, loadSavedChat, saveSavedChat } from '../src/persistence.js';
+import { build_system_prompt } from '../src/prompts.js';
 import { ToolCall, ToolCallFunction, ToolMessage } from '../src/types.js';
-import type { ChatEvent, SavedChat, SerializedMessage } from '../shared/contract.js';
+import type { ChatEvent, SavedChat, SerializedMessage, VolumeMount } from '../shared/contract.js';
 
 let failures = 0;
 
@@ -310,6 +311,28 @@ async function main(): Promise<void> {
     check('Engine.deleteChat closes a restored chat', (await loadSavedChat('smoke-chat-1')) === null);
   } else {
     console.log('skip - persistence round-trip (no models available)');
+  }
+
+  // --- system prompt: mounted host directories (pure, no Docker) ------------
+  const promptModel = MODELS[0];
+  if (promptModel !== undefined) {
+    const mounts: VolumeMount[] = [
+      ['/host/data', '/home/agent/data', 'ro'],
+      ['/host/src', '/home/agent/src'],
+    ];
+    const noHostAccess = build_system_prompt(promptModel, 'p', [], [], [], undefined, undefined, false, mounts);
+    check('the mount section is omitted when host tools are disabled',
+      !noHostAccess.includes('# Mounted host directories'));
+    const noMounts = build_system_prompt(promptModel, 'p', [], [], [], undefined, undefined, true, []);
+    check('the mount section is omitted when nothing is mounted',
+      !noMounts.includes('# Mounted host directories'));
+    const described = build_system_prompt(promptModel, 'p', [], [], [], undefined, undefined, true, mounts);
+    check('the mount section lists each mount with its access mode',
+      described.includes('# Mounted host directories')
+      && described.includes('/host/data -> /home/agent/data (read-only)')
+      && described.includes('/host/src -> /home/agent/src (read-write)'));
+  } else {
+    console.log('skip - system prompt mount section (no models available)');
   }
 
   await engine.shutdown();

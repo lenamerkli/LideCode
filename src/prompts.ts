@@ -1,5 +1,6 @@
 import {Model} from "./types.js";
 import {HOST_TOOL_NAMES, Tool} from "./tool_definitions.js";
+import type {VolumeMount} from "../shared/contract.js";
 
 
 interface ToolCall {
@@ -8,9 +9,21 @@ interface ToolCall {
 }
 
 
-export function build_system_prompt(model: Model, project_name: string, tools: Tool[], skills: string[] = [], scripts: string[] = [], system_prompt_ext: string | undefined, tools_prompt_ext: string | undefined): string {
+export function build_system_prompt(model: Model, project_name: string, tools: Tool[], skills: string[] = [], scripts: string[] = [], system_prompt_ext: string | undefined, tools_prompt_ext: string | undefined, allow_host: boolean = false, docker_mounts: VolumeMount[] = []): string {
   let prompt = "# Introduction\nYou are an expert coding assistant operating inside LideCode, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files. You are running inside a docker container. The project that you are working on is at `/home/agent/%%project_name%%`.\n"
   prompt = prompt.replace("%%project_name%%", project_name)
+  if (allow_host && docker_mounts.length > 0) {
+    // Only reveal host paths when the user allowed host access; with host tools
+    // disabled the agent must not learn them. An unset mode means Docker's
+    // default (`rw`), so only `ro` is read-only.
+    prompt += "# Mounted host directories\n"
+    prompt += "The user has mounted the following host directories into your container. Their contents are directly accessible from inside the container at the listed container path, so use the ordinary `bash`, `read_file`, `replace_in_file` and `write_to_file` tools for them rather than the `host_*` tools, which are only needed for host paths outside these mounts and require per-call approval. Respect the access mode: writes to a read-only mount will fail.\n"
+    prompt += "```\n"
+    for (const [host, container, mode] of docker_mounts) {
+      prompt += host + " -> " + container + " (" + (mode === "ro" ? "read-only" : "read-write") + ")\n"
+    }
+    prompt += "```\n"
+  }
   if (system_prompt_ext) {
     prompt += system_prompt_ext
   }

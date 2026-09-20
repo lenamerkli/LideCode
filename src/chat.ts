@@ -287,7 +287,9 @@ export class Chat {
     if (model.supports_vision && this._host_tools) {
       this._tools.push(HOST_VIEWIMAGE_TOOL)
     }
-    this._conversation = new Conversation([new SystemMessage(build_system_prompt(model, project_name, this._tools, [], [], this._system_prompt_ext, this._tools_prompt_ext))])
+    // Mounts are unknown until `start_docker`, which rebuilds this prompt via
+    // `load_skills_and_scripts`; pass the flag so it is already correct here.
+    this._conversation = new Conversation([new SystemMessage(build_system_prompt(model, project_name, this._tools, [], [], this._system_prompt_ext, this._tools_prompt_ext, this._host_tools, []))])
   }
 
   async ensure_docker_image(): Promise<void> {
@@ -348,9 +350,11 @@ export class Chat {
     console.log('Starting Docker container ' + this._container_name + '...');
     await run('docker', args)
     console.log('Docker container ' + this._container_name + ' started');
-    await this.load_skills_and_scripts()
+    // Record the mounts before rebuilding the prompt: its mounted-directories
+    // section is derived from them.
     this._volumes = additional_volumes
     this._env = env
+    await this.load_skills_and_scripts()
     this._container_started = true
   }
 
@@ -422,7 +426,9 @@ export class Chat {
       this._allow_web ? skills : skills.filter((skill) => !skill.startsWith(WEB_SKILLS_DIR)),
       this._allow_web ? scripts : scripts.filter((script) => script !== WEB_SCRIPT_PATH),
       this._system_prompt_ext,
-      this._tools_prompt_ext
+      this._tools_prompt_ext,
+      this._host_tools,
+      this._volumes ?? []
     ))
     this._notifyChanged()
   }
