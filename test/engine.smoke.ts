@@ -14,6 +14,7 @@ import { ApiError, Engine } from '../src/engine.js';
 import { Chat, CANCELLED_TOOL_RESULT, volumeArgument } from '../src/chat.js';
 import { MODELS } from '../src/models.js';
 import { hostBash, hostReadFile, hostReplaceInFile, hostWriteToFile } from '../src/host_tools.js';
+import { format_generation_log, log_generation, log_generation_error } from '../src/logging.js';
 import { deleteSavedChat, deriveTitle, listSavedChats, loadSavedChat, saveSavedChat } from '../src/persistence.js';
 import { build_system_prompt } from '../src/prompts.js';
 import { ToolCall, ToolCallFunction, ToolMessage } from '../src/types.js';
@@ -114,6 +115,88 @@ async function main(): Promise<void> {
     volumeArgument('/host/data', '/home/agent/data', 'ro') === '/host/data:/home/agent/data:ro');
   check('volumeArgument appends an explicit read-write mode',
     volumeArgument('/host/data', '/home/agent/data', 'rw') === '/host/data:/home/agent/data:rw');
+
+  // --- LLM generation logging (pure, no Docker, no LLM) ----------------------
+  const baseLog = {
+    model: 'test/model',
+    finish_reason: null as string | null,
+    thinking: null as string | null,
+    content: null as string | null,
+    refusal: null as string | null,
+    tool_calls: [] as { name: string; arguments: string }[],
+    usage: undefined as
+      { prompt_tokens: number; completion_tokens: number; total_tokens: number; cost?: number | null } | undefined,
+    cost: undefined as number | undefined,
+  };
+  const renderLog = (overrides: Partial<typeof baseLog>): string =>
+    format_generation_log({ ...baseLog, ...overrides });
+
+  const fullLog = renderLog({
+    model: 'anthropic/claude-opus-5',
+    finish_reason: 'tool_calls',
+    thinking: 'Let me check the files first.',
+    content: 'Listing the directory.',
+    tool_calls: [{ name: 'bash', arguments: '{"command":"ls -la"}' }],
+    usage: { prompt_tokens: 120, completion_tokens: 45, total_tokens: 165, cost: 0.0123 },
+    cost: 0.0123,
+  });
+  check('a completed generation logs model, finish reason, tokens and cost',
+    fullLog.startsWith('[LLM] anthropic/claude-opus-5 · finish=tool_calls · tokens=120/45/165 · cost=0.0123'));
+  check('a completed generation logs its thinking block',
+    fullLog.includes('  thinking:\n    Let me check the files first.'));
+  check('a completed generation logs its content block',
+    fullLog.includes('  content:\n    Listing the directory.'));
+  check('a completed generation logs its tool calls',
+    fullLog.includes('  tool_calls:\n    - bash({"command":"ls -la"})'));
+
+  check('a stream without a finish reason says so',
+    renderLog({}).startsWith('[LLM] test/model · finish=none'));
+  check('usage without a cost omits the cost field',
+    renderLog({ usage: { prompt_tokens: 3, completion_tokens: 4, total_tokens: 7 } })
+      .startsWith('[LLM] test/model · finish=none · tokens=3/4/7')
+    && renderLog({ usage: { prompt_tokens: 3, completion_tokens: 4, total_tokens: 7 } }).includes('cost=') === false);
+
+  const toolOnlyLog = renderLog({ finish_reason: 'tool_calls', tool_calls: [{ name: 'bash', arguments: '{}' }] });
+  check('a tool-only response omits the thinking and content blocks',
+    toolOnlyLog.includes('tool_calls:') && toolOnlyLog.includes('thinking:') === false
+    && toolOnlyLog.includes('content:') === false);
+
+  const multilineLog = renderLog({ content: 'first line\nsecond line' });
+  check('multi-line payloads are indented line by line',
+    multilineLog.includes('  content:\n    first line\n    second line'));
+
+  check('a refusal is logged separately from the content',
+    renderLog({ refusal: 'I cannot help with that.' }).includes('  refusal:\n    I cannot help with that.'));
+
+  check('a nameless, argument-less tool call is still rendered',
+    renderLog({ tool_calls: [{ name: '', arguments: '' }] }).includes('    - (unnamed)'));
+
+  const originalLog = console.log;
+  const loggedLines: string[] = [];
+  console.log = (...data: unknown[]): void => { loggedLines.push(data.join(' ')); };
+  try {
+    log_generation({ ...baseLog, model: 'test/logged' });
+  } finally {
+    console.log = originalLog;
+  }
+  check('log_generation prints exactly one formatted entry to the console',
+    loggedLines.length === 1 && loggedLines[0]?.startsWith('[LLM] test/logged') === true);
+
+  const originalError = console.error;
+  const errorLines: string[] = [];
+  console.error = (...data: unknown[]): void => { errorLines.push(data.join(' ')); };
+  try {
+    log_generation_error('test/model', new Error('boom'));
+    const aborted = new Error('aborted');
+    aborted.name = 'AbortError';
+    log_generation_error('test/model', aborted);
+  } finally {
+    console.error = originalError;
+  }
+  check('a failed generation is logged with its error message',
+    errorLines[0] === '[LLM] test/model · error: boom');
+  check('a cancelled generation is logged as cancelled',
+    errorLines[1] === '[LLM] test/model · error: cancelled');
 
   // --- host tools (pure, no Docker) -----------------------------------------
   const hostDir = mkdtempSync(join(tmpdir(), 'lidecode-host-'));

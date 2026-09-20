@@ -90,6 +90,28 @@ API keys are read from, in order of precedence:
 `.env` is git-ignored. Keys that were previously committed to this repository
 must be rotated.
 
+## LLM request logging
+
+Every LLM request is logged to the console when its stream completes: a header
+with the model id, finish reason, token usage and cost, followed by the
+`thinking`, `content` and `tool_calls` blocks the model produced:
+
+```
+[LLM] anthropic/claude-opus-5 · finish=tool_calls · tokens=120/45/165 · cost=0.0123
+  thinking:
+    Let me check the files first.
+  content:
+    Listing the directory.
+  tool_calls:
+    - bash({"command":"ls -la"})
+```
+
+Empty sections are omitted, and failed or cancelled requests are logged as
+`[LLM] <model> · error: ...` so a turn never ends silently. The logs go to the
+**main process** stdout (the terminal that launched Electron), not to the
+renderer's DevTools console. Formatting lives in `src/logging.ts`
+(`format_generation_log`) and is covered by `npm run smoke`.
+
 ## Chat persistence
 
 Chats are saved automatically after every change (debounced) and flushed on
