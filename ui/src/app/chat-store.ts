@@ -242,13 +242,21 @@ export class ChatStore {
         this.status.set('waiting for the model…');
         break;
       case 'thinking':
-        this.liveThinking.update((text) => text + event.delta);
-        this.status.set('thinking…');
+      case 'text': {
+        // A cancelled turn may still deliver a few deltas while its stream is
+        // torn down; the turn is over, so they must not re-open the bubble.
+        if (!this.busy()) {
+          break;
+        }
+        if (event.type === 'thinking') {
+          this.liveThinking.update((value) => value + event.delta);
+          this.status.set('thinking…');
+        } else {
+          this.liveText.update((value) => value + event.delta);
+          this.status.set('writing…');
+        }
         break;
-      case 'text':
-        this.liveText.update((text) => text + event.delta);
-        this.status.set('writing…');
-        break;
+      }
       case 'generation_finished':
         this.liveText.set('');
         this.liveThinking.set('');

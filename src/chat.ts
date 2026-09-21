@@ -216,6 +216,8 @@ export class Chat {
   private readonly _tools: Tool[]
   private readonly _container_name: string
   private _generation_handle: GenerationHandle | undefined
+  /** Unsubscribe function of the active generation's event subscription. */
+  private _generation_unsubscribe: (() => void) | undefined
   private _generation_cancelled: boolean = false
   /** Aborts the tool executions of the current turn; replaced by `begin_turn`. */
   private _turn_abort: AbortController | undefined
@@ -495,9 +497,16 @@ export class Chat {
         })
       }
     })
+    this._generation_unsubscribe = unsubscribe
     handle.done.then((generation_result) => {
       unsubscribe()
+      this._generation_unsubscribe = undefined
       this._generation_handle = undefined
+      if (this._generation_cancelled) {
+        // The turn was cancelled while the stream was completing: the user
+        // asked to stop, so the finished result is discarded and not committed.
+        return
+      }
       this._conversation.messages.push(generation_result.message)
       this._cost += generation_result.cost ?? 0
       this._notifyChanged()
@@ -506,18 +515,26 @@ export class Chat {
         this._emit({type: 'tool_started', id: tool_call.id, name: tool_call.function.name})
         this.call_tool(tool_call).then(() => {
           this._waiting_for_tool_response--
+          // A cancelled turn stays silent: no tool events for the user and no
+          // follow-up generation once the aborted call settles.
+          if (this._generation_cancelled) {
+            return
+          }
           this._emit({type: 'tool_finished', id: tool_call.id, name: tool_call.function.name})
-          if (this._waiting_for_tool_response == 0 && !this._generation_cancelled) {
+          if (this._waiting_for_tool_response == 0) {
             this.generate()
           }
         }).catch((error: unknown) => {
           this._waiting_for_tool_response--
+          if (this._generation_cancelled) {
+            return
+          }
           this._emit({type: 'tool_finished', id: tool_call.id, name: tool_call.function.name})
           const message = error instanceof Error ? error.message : String(error)
           console.error('Unexpected error executing tool call: ' + message)
           this._conversation.messages.push(new ToolMessage(tool_call.id, 'Error executing tool `' + tool_call.function.name + '`: ' + message))
           this._notifyChanged()
-          if (this._waiting_for_tool_response == 0 && !this._generation_cancelled) {
+          if (this._waiting_for_tool_response == 0) {
             this.generate()
           }
         })
@@ -528,6 +545,7 @@ export class Chat {
       }
     }).catch((error: unknown) => {
       unsubscribe()
+      this._generation_unsubscribe = undefined
       this._generation_handle = undefined
       if (!this._generation_cancelled) {
         this._generation_error = error instanceof Error ? error.message : String(error)
@@ -538,6 +556,11 @@ export class Chat {
   }
 
   cancel_generation(): void {
+    // Stop forwarding stream events first: chunks that are still in flight
+    // while the HTTP request is torn down must not reach the listeners after
+    // the turn was cancelled — they would look like the generation continued.
+    this._generation_unsubscribe?.()
+    this._generation_unsubscribe = undefined
     // Kill the tools of this turn first: an in-flight command must stop instead
     // of running to completion while the turn is already being torn down.
     if (this._turn_abort !== undefined) {
