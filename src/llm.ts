@@ -1,4 +1,5 @@
 import {AssistantMessage, Conversation, Model, Providers, ToolCall, ToolCallFunction,} from "./types.js";
+import {log_generation, log_generation_error} from "./logging.js";
 import {OpenRouter} from "@openrouter/sdk";
 
 /**
@@ -226,6 +227,19 @@ export class OpenRouterLLM extends LLM {
         finishReason,
       );
 
+      // Report the finished request (thinking, content and tool calls) to the
+      // console before notifying listeners, so the log reads in stream order.
+      log_generation({
+        model: this.model.tech_name,
+        finish_reason: finishReason,
+        thinking: message.reasoning,
+        content: message.content,
+        refusal: message.refusal,
+        tool_calls: toolCalls.map((call) => ({name: call.function.name, arguments: call.function.arguments})),
+        usage,
+        cost: usage?.cost ?? undefined,
+      });
+
       emit({type: 'done', message, cost: usage?.cost ?? undefined});
       return {
         message,
@@ -237,6 +251,9 @@ export class OpenRouterLLM extends LLM {
     // Mark finished even if the stream loop rejects.
     done.catch((error: unknown) => {
       finished = true;
+      // A generation that never completes normally (provider error, cancelled
+      // stream) would otherwise leave no trace in the console.
+      log_generation_error(this.model.tech_name, error);
       emit({type: 'error', message: error instanceof Error ? error.message : String(error)});
     });
 
