@@ -190,36 +190,99 @@ function render_tool_call_placeholders(text: string, model: Model): string {
   return result
 }
 
-function format_tool_call(tool_call: ToolCall, model: Model): string {
+function toPythonJson(value: any): string {
+  if (value === null) return 'null';
+  const t = typeof value;
+  if (t === 'string' || t === 'number' || t === 'boolean') return JSON.stringify(value);
+  if (Array.isArray(value)) return '[' + value.map(toPythonJson).join(', ') + ']';
+  if (t === 'object') {
+    return '{' + Object.keys(value).map((k) => JSON.stringify(k) + ': ' + toPythonJson(value[k])).join(', ') + '}';
+  }
+  return JSON.stringify(value); // undefined / function / symbol
+}
+
+function serializeArgument(value: unknown): string {
+  if (typeof value === 'string') {
+    return value;
+  }
+  const result = JSON.stringify(value);
+  return result === undefined ? '' : result;
+}
+
+/**
+ * Recursive XML serializer for MiniMax-M3 tool call arguments
+ * Matches the official Jinja macro `to_xml(val, ns_token)`:
+ * - mapping: `<key>to_xml(val)</key>` (None/null values omitted)
+ * - sequence: `<item>to_xml(item)</item>`
+ * - boolean: JSON representation ('true' | 'false')
+ * - string / number: as-is string
+ */
+function toMiniMaxXml(val: any, ns: string): string {
+  if (val === null || val === undefined) {
+    return '';
+  }
+  if (Array.isArray(val)) {
+    return val.map((item) => `${ns}<item>${toMiniMaxXml(item, ns)}${ns}</item>`).join('');
+  }
+  if (typeof val === 'object') {
+    return Object.entries(val)
+      .filter(([_, v]) => v !== null && v !== undefined)
+      .map(([k, v]) => `${ns}<${k}>${toMiniMaxXml(v, ns)}${ns}</${k}>`)
+      .join('');
+  }
+  if (typeof val === 'boolean') {
+    return JSON.stringify(val);
+  }
+  return String(val);
+}
+
+export function format_tool_call(tool_call: ToolCall, model: Model): string {
   let call = '';
-  if (model.tech_name.includes("deepseek") && model.tech_name.includes("v4")) {
-    call += "<｜DSML｜tool_calls>\n"
-    call += "<｜DSML｜invoke name=\"" + tool_call.name + "\">\n"
+
+  if (model.tech_name.includes('deepseek') && model.tech_name.includes('v4')) {
+    call += '<｜DSML｜ calls>\n';
+    call += '<｜DSML｜ invoke name="' + tool_call.name + '">\n';
     for (const key of Object.keys(tool_call.arguments)) {
-      if (typeof tool_call.arguments[key] === 'string') {
-        call += "<｜DSML｜parameter name=\"param\" string=\"true\">" + tool_call.arguments[key] + "</｜DSML｜parameter>\n"
+      const val = tool_call.arguments[key];
+      if (typeof val === 'string') {
+        call += '<｜DSML｜ parameter name="' + key + '" string="true">' + val + '</｜DSML｜ parameter>\n';
       } else {
-        call += "<｜DSML｜parameter name=\"param\" string=\"false\">" + tool_call.arguments[key] + "</｜DSML｜parameter>\n"
+        call += '<｜DSML｜ parameter name="' + key + '" string="false">' + JSON.stringify(val) + '</｜DSML｜ parameter>\n';
       }
     }
-    call += "</｜DSML｜invoke>\n"
-    call += "</｜DSML｜tool_calls>\n"
-  } else if ((model.tech_name.includes('glm') && model.tech_name.includes('5.')) || (model.tech_name.includes("laguna") && model.tech_name.includes("2.1"))) {
-    call += "<tool_call>" + tool_call.name + "\n"
+    call += '</｜DSML｜ invoke>\n';
+    call += '</｜DSML｜ calls>\n';
+  } else if (model.tech_name.includes('laguna') && model.tech_name.includes('2.1')) {
+    call += '<tool_call>' + tool_call.name;
     for (const key of Object.keys(tool_call.arguments)) {
-      call += "<arg_key>" + key + "</arg_key><arg_value>" + tool_call.arguments[key] + "</arg_value>\n"
+      const val = tool_call.arguments[key];
+      const serialized = typeof val === 'string' ? val : JSON.stringify(val);
+      call += '<arg_key>' + key + '</arg_key><arg_value>' + serialized + '</arg_value>';
     }
-    call += "</tool_call>\n"
-  } else if (model.tech_name.includes('qwen') && model.tech_name.includes('3.8')) {
-    call += "<tool_call>\n"
-    call += "<function=" + tool_call.name + ">\n"
+    call += '</tool_call>';
+  } else if (model.tech_name.includes('glm') && model.tech_name.includes('5.')) {
+    call += '<tool_call>' + tool_call.name;
     for (const key of Object.keys(tool_call.arguments)) {
-      call += "<parameter=" + key + ">\n" + tool_call.arguments[key] + "\n</parameter>\n"
+      const val = tool_call.arguments[key];
+      const serialized = typeof val === 'string' ? val : JSON.stringify(val);
+      call += '<arg_key>' + key + '</arg_key><arg_value>' + serialized + '</arg_value>';
     }
-    call += "</function>\n</tool_call>"
+    call += '</tool_call>';
+  } else if (
+    (model.tech_name.includes('qwen') && model.tech_name.includes('3.8')) ||
+    (model.tech_name.includes('mimo') && model.tech_name.includes('2.5'))
+  ) {
+    call += '<tool_call>\n';
+    call += '<function=' + tool_call.name + '>\n';
+    for (const key of Object.keys(tool_call.arguments)) {
+      const val = tool_call.arguments[key];
+      const serialized = typeof val === 'string' ? val : JSON.stringify(val);
+      call += '<parameter=' + key + '>\n' + serialized + '\n</parameter>\n';
+    }
+    call += '</function>\n</tool_call>';
   } else if (model.tech_name.includes('kimi') && model.tech_name.includes('k3')) {
-    call += "<|open|>tools<|sep|>"
-    call += "<|open|>call tool=\"" + tool_call.name + "\" index=\"1\"<|sep|>"
+    call += '<|open|>tools<|sep|>';
+    call += '<|open|>call tool="' + tool_call.name + '" index="1"<|sep|>';
     for (const key of Object.keys(tool_call.arguments)) {
       const val = tool_call.arguments[key];
       let type = 'string';
@@ -245,19 +308,65 @@ function format_tool_call(tool_call: ToolCall, model: Model): string {
       } else {
         valStr = String(val);
       }
-      call += "<|open|>argument key=\"" + key + "\" type=\"" + type + "\"<|sep|>" + valStr + "<|close|>argument<|sep|>"
+      call += '<|open|>argument key="' + key + '" type="' + type + '"<|sep|>' + valStr + '<|close|>argument<|sep|>';
     }
-    call += "<|close|>call<|sep|>"
-    call += "<|close|>tools<|sep|>\n"
-  } else {
-    call += "<tool_call>\n"
-    call += "<name>" + tool_call.name + "</name>\n"
-    call += "<arguments>\n"
+    call += '<|close|>call<|sep|>';
+    call += '<|close|>tools<|sep|>';
+  } else if (model.tech_name.includes('minimax') && model.tech_name.includes('m3')) {
+    const ns = ']<]minimax[>[';
+    call += ns + '<tool_call>\n';
+    call += ns + '<invoke name="' + tool_call.name + '">\n';
     for (const key of Object.keys(tool_call.arguments)) {
-      call += "<" + key + ">" + tool_call.arguments[key] + "</" + key + ">\n"
+      const val = tool_call.arguments[key];
+      if (val !== null && val !== undefined) {
+        call += ns + '<' + key + '>' + toMiniMaxXml(val, ns) + ns + '</' + key + '>\n';
+      }
     }
-    call += "</arguments>\n"
-    call += "</tool_call>\n"
+    call += ns + '</invoke>\n';
+    call += ns + '</tool_call>';
+  } else if (model.tech_name.includes('nemotron') && model.tech_name.includes('3')) {
+    call += '<tool_call>\n';
+    call += '<function=' + tool_call.name + '>\n';
+    for (const key of Object.keys(tool_call.arguments)) {
+      const val = tool_call.arguments[key];
+      const serialized = typeof val === 'string' ? val : JSON.stringify(val);
+      call += '<parameter=' + key + '>\n' + serialized + '\n</parameter>\n';
+    }
+    call += '</function>\n';
+    call += '</tool_call>\n';
+  } else if (model.tech_name.includes('tencent') && model.tech_name.includes('hy3')) {
+    call += '<tool_calls:opensource>\n';
+    call += '<tool_call:opensource>' + tool_call.name + '<tool_sep:opensource>\n';
+    for (const key of Object.keys(tool_call.arguments)) {
+      const val = tool_call.arguments[key];
+      const valStr = typeof val === 'string' ? val : JSON.stringify(val);
+      call += '<arg_key:opensource>' + key + '</arg_key:opensource>\n';
+      call += '<arg_value:opensource>' + valStr + '</arg_value:opensource>\n';
+    }
+    call += '</tool_call:opensource>\n';
+    call += '</tool_calls:opensource>\n';
+  } else if (model.tech_name.includes('tencent') && model.tech_name.includes('hy4')) {
+    call += '<tool_calls:opensource>';
+    call += '<tool_call:opensource>' + tool_call.name;
+    for (const key of Object.keys(tool_call.arguments)) {
+      const val = tool_call.arguments[key];
+      const valStr = typeof val === 'string' ? val : JSON.stringify(val);
+      call += '<arg_key:opensource>' + key + '</arg_key:opensource>';
+      call += '<arg_value:opensource>' + valStr + '</arg_value:opensource>';
+    }
+    call += '</tool_call:opensource>';
+    call += '</tool_calls:opensource>';
+  } else {
+    // Default fallback format
+    call += '<tool_call>\n';
+    call += '<name>' + tool_call.name + '</name>\n';
+    call += '<arguments>\n';
+    for (const key of Object.keys(tool_call.arguments)) {
+      call += '<' + key + '>' + serializeArgument(tool_call.arguments[key]) + '</' + key + '>\n';
+    }
+    call += '</arguments>\n';
+    call += '</tool_call>\n';
   }
-  return call
+
+  return call;
 }
