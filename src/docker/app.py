@@ -152,7 +152,40 @@ def read_file():
         text = content[offset:end_offset]
         if len(text) > max_chars:
             text = text[:max_chars]
-        return {'content': text, 'first_char': offset, 'last_char': end_offset - 1, 'first_line': None, 'last_line': None}
+
+        # Describe what was really returned, not the range that was requested,
+        # so `last_char` never claims characters that `max_chars` cut away.
+        # line_starts[i] is the character offset at which line i + 1 begins.
+        line_starts = []
+        cursor = 0
+        for line in lines:
+            line_starts.append(cursor)
+            cursor += len(line)
+
+        def line_of(char_offset):
+            # Greatest index whose line starts at or before char_offset, plus one.
+            low, high = 0, len(line_starts) - 1
+            while low < high:
+                mid = (low + high + 1) // 2
+                if line_starts[mid] <= char_offset:
+                    low = mid
+                else:
+                    high = mid - 1
+            return low + 1
+
+        read_end = offset + len(text)
+        first_line = line_of(offset) if lines else 0
+        last_line = line_of(read_end - 1) if text else None
+        return {
+            'content': text,
+            'first_char': offset,
+            'last_char': read_end - 1 if text else None,
+            'first_line': first_line,
+            'last_line': last_line,
+            'total_lines': len(lines),
+            'unread_chars': max(len(content) - read_end, 0),
+            'unread_lines': max(len(lines) - (last_line if last_line is not None else first_line), 0),
+        }
     except ValueError as e:
         return {'error': str(e)}, 400
     except Exception as e:

@@ -211,6 +211,78 @@ function splitLinesKeepEnds(text: string): string[] {
 }
 
 /**
+ * Character and line metadata for the slice of a file that was actually read.
+ *
+ * `first_char`/`last_char` are inclusive character offsets into the whole file
+ * and describe the text that really ended up in `<content>` — i.e. after any
+ * `max_chars` truncation, not the range that was requested. Line numbers are
+ * 1-indexed. `last_char`/`last_line` are null when nothing was read.
+ *
+ * `unread_chars`/`unread_lines` are what remains after the returned text, so
+ * the agent can tell a complete read from a truncated one and page onwards.
+ * Mirrored by the container endpoint in `src/docker/app.py`.
+ */
+export interface ReadMetadata {
+  first_char: number;
+  last_char: number | null;
+  first_line: number;
+  last_line: number | null;
+  total_lines: number;
+  unread_chars: number;
+  unread_lines: number;
+}
+
+/**
+ * Describe the `readLength` characters of `content` that start at `start`,
+ * using the pre-split `lines` (from `splitLinesKeepEnds`) so the line
+ * numbering matches the container's Python `splitlines` semantics.
+ */
+function describeRead(content: string, lines: string[], start: number, readLength: number): ReadMetadata {
+  // lineStarts[i] is the character offset at which line i + 1 begins.
+  const lineStarts: number[] = [];
+  let cursor = 0;
+  for (const line of lines) {
+    lineStarts.push(cursor);
+    cursor += line.length;
+  }
+  const lineOf = (charOffset: number): number => {
+    // Greatest index whose line starts at or before charOffset, plus one.
+    let low = 0;
+    let high = lineStarts.length - 1;
+    while (low < high) {
+      const mid = Math.ceil((low + high) / 2);
+      if ((lineStarts[mid] ?? Number.MAX_SAFE_INTEGER) <= charOffset) {
+        low = mid;
+      } else {
+        high = mid - 1;
+      }
+    }
+    return low + 1;
+  };
+  const end = start + readLength;
+  const firstLine = lines.length === 0 ? 0 : lineOf(start);
+  const lastLine = readLength > 0 ? lineOf(end - 1) : null;
+  return {
+    first_char: start,
+    last_char: readLength > 0 ? end - 1 : null,
+    first_line: firstLine,
+    last_line: lastLine,
+    total_lines: lines.length,
+    unread_chars: Math.max(content.length - end, 0),
+    unread_lines: Math.max(lines.length - (lastLine ?? firstLine), 0),
+  };
+}
+
+/** Render the metadata block shown to the agent for a file read. */
+export function formatReadResult(path: string, meta: ReadMetadata, text: string): string {
+  return '<path>' + path + '</path>\n<first_char>' + meta.first_char + '</first_char>\n<last_char>'
+    + meta.last_char + '</last_char>\n<first_line>' + meta.first_line + '</first_line>\n<last_line>'
+    + meta.last_line + '</last_line>\n<total_lines>' + meta.total_lines + '</total_lines>\n<unread_chars>'
+    + meta.unread_chars + '</unread_chars>\n<unread_lines>' + meta.unread_lines
+    + '</unread_lines>\n<content>' + text + '</content>';
+}
+
+/**
  * `host_read_file`: the same offset math as the container endpoint. The
  * further of `start_line`/`start_char` wins for the start, and the further of
  * `end_line`/`end_char` wins for the end.
@@ -248,9 +320,10 @@ export async function hostReadFile(args: Record<string, unknown>): Promise<strin
   if (text.length > maxChars) {
     text = text.slice(0, maxChars);
   }
-  return '<path>' + path + '</path>\n<first_char>' + offset + '</first_char>\n<last_char>'
-    + (endOffset - 1) + '</last_char>\n<first_line>null</first_line>\n<last_line>null</last_line>\n<content>'
-    + text + '</content>';
+  // Describe what was really returned, not the range that was requested, so
+  // `last_char` never claims characters that `max_chars` cut away.
+  const meta = describeRead(file.content, lines, offset, text.length);
+  return formatReadResult(path, meta, text);
 }
 
 /** `host_write_to_file`: create parent directories and overwrite the file. */

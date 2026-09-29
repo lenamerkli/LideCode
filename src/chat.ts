@@ -20,12 +20,14 @@ import {
 import {
   copyDockerToHost,
   copyHostToDocker,
+  formatReadResult,
   hostBash,
   hostReadFile,
   hostReplaceInFile,
   hostViewImage,
   hostWriteToFile,
 } from "./host_tools.js";
+import type {ReadMetadata} from "./host_tools.js";
 import {build_system_prompt} from "./prompts.js";
 import {LLM, get_llm, GenerationHandle} from "./llm.js";
 import {MODELS} from "./models.js";
@@ -820,7 +822,18 @@ export class Chat {
     if (response.error) {
       return response.error
     }
-    return '<path>' + path + '</path>\n<first_char>' + response.first_char + '</first_char>\n<last_char>' + response.last_char + '</last_char>\n<first_line>' + response.first_line + '</first_line>\n<last_line>' + response.last_line + '</last_line>\n<content>' + response.content + '</content>'
+    // An older container image without the line/unread fields still works; fall
+    // back to what it did send rather than printing `undefined`.
+    const meta: ReadMetadata = {
+      first_char: response.first_char,
+      last_char: response.last_char ?? null,
+      first_line: response.first_line ?? 0,
+      last_line: response.last_line ?? null,
+      total_lines: response.total_lines ?? 0,
+      unread_chars: response.unread_chars ?? 0,
+      unread_lines: response.unread_lines ?? 0,
+    }
+    return formatReadResult(path, meta, response.content)
   }
 
   async execute_write_to_file(args: Record<string, unknown>, signal?: AbortSignal): Promise<string> {

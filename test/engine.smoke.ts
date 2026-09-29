@@ -207,6 +207,24 @@ async function main(): Promise<void> {
     && readFileSync(hostFile, 'utf8') === 'alpha\nbeta\ngamma\n');
   const readResult = await hostReadFile({ path: hostFile, start_line: 1, end_line: 1, start_char: 0, end_char: 0 });
   check('hostReadFile returns the selected line range', readResult.includes('<content>alpha\n</content>'));
+  check('hostReadFile reports the lines actually read',
+    readResult.includes('<first_line>1</first_line>') && readResult.includes('<last_line>1</last_line>')
+    && readResult.includes('<total_lines>3</total_lines>'));
+  check('hostReadFile reports what is still unread',
+    readResult.includes('<unread_chars>11</unread_chars>') && readResult.includes('<unread_lines>2</unread_lines>'));
+  const fullRead = await hostReadFile({ path: hostFile });
+  check('hostReadFile reports a complete read as fully read',
+    fullRead.includes('<first_char>0</first_char>') && fullRead.includes('<last_char>16</last_char>')
+    && fullRead.includes('<first_line>1</first_line>') && fullRead.includes('<last_line>3</last_line>')
+    && fullRead.includes('<unread_chars>0</unread_chars>') && fullRead.includes('<unread_lines>0</unread_lines>'));
+  const truncatedRead = await hostReadFile({ path: hostFile, max_chars: 6 });
+  check('hostReadFile truncating with max_chars does not overstate last_char',
+    truncatedRead.includes('<last_char>5</last_char>') && truncatedRead.includes('<content>alpha\n</content>')
+    && truncatedRead.includes('<unread_chars>11</unread_chars>') && truncatedRead.includes('<unread_lines>2</unread_lines>'));
+  const pastEndRead = await hostReadFile({ path: hostFile, start_char: 9999 });
+  check('hostReadFile reports a past-the-end read as empty rather than undefined',
+    pastEndRead.includes('<content></content>') && pastEndRead.includes('<last_char>null</last_char>')
+    && pastEndRead.includes('<last_line>null</last_line>') && !pastEndRead.includes('undefined'));
   const missingResult = await hostReadFile({ path: join(hostDir, 'missing.txt') });
   check('hostReadFile reports a missing file',
     missingResult === 'File not found: ' + join(hostDir, 'missing.txt'));
