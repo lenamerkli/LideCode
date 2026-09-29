@@ -76,7 +76,11 @@ export interface SerializedMessage {
   content?: unknown;
   tool_calls?: { id: string; type: 'function'; function: { name: string; arguments: string } }[];
   tool_call_id?: string;
-  /** Legacy camelCase tool-call id emitted by an earlier `ToolMessage.toJSON()`. */
+  /**
+   * CamelCase tool-call id. This is what `ToolMessage.toJSON()` currently emits
+   * for persistence; the OpenAI wire format uses `tool_call_id` instead, which
+   * `OpenAICompatibleCodec` produces. Read both when loading.
+   */
   toolCallId?: string;
   name?: string;
   reasoning?: string | null;

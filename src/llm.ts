@@ -1,6 +1,9 @@
 import {AssistantMessage, Conversation, Model, Providers, ToolCall, ToolCallFunction,} from "./types.js";
 import {log_generation, log_generation_error} from "./logging.js";
 import {OpenRouter} from "@openrouter/sdk";
+import type {ChatMessages, ChatRequest} from "@openrouter/sdk/models";
+import {OpenRouterCodec, type ProviderCodec} from "./codec.js";
+import type {Tool} from "./tool_definitions.js";
 
 /**
  * Handle returned by `LLM.generate`.
@@ -81,29 +84,50 @@ interface StreamChunk {
 
 type StreamChunkChoice = StreamChoice;
 
-export function get_llm(model: Model, temperature: number | undefined): LLM {
+/**
+ * Builds the client for a model's provider.
+ *
+ * Returns `LLM<unknown, unknown>` because callers only ever drive the
+ * `GenerationHandle`; the concrete provider types are enforced inside each
+ * implementation, where the request body is actually assembled.
+ */
+export function get_llm(model: Model, temperature: number | undefined): LLM<unknown, unknown> {
   if (model.provider == Providers.OpenRouter) {
     return new OpenRouterLLM(model, temperature);
   }
   throw new Error(`Unknown provider: ${model.provider}`);
 }
 
-export abstract class LLM {
+/**
+ * Base class for provider clients.
+ *
+ * `TMessages` is the provider's message shape, carried so each subclass gets
+ * a request body that is statically checked against that provider's types.
+ * Subclasses pick their codec and never hand-roll message serialization.
+ */
+export abstract class LLM<TMessages, TTools = Tool[]> {
   readonly model: Model;
   readonly temperature: number | undefined;
-  protected constructor(model: Model, temperature: number | undefined) {
+  /** Encodes conversations into this provider's wire format. */
+  protected readonly codec: ProviderCodec<TMessages, TTools>;
+  protected constructor(
+    model: Model,
+    temperature: number | undefined,
+    codec: ProviderCodec<TMessages, TTools>,
+  ) {
     this.model = model;
     this.temperature = temperature;
+    this.codec = codec;
   };
-  abstract generate(conversation: Conversation, tools?: any): GenerationHandle;
+  abstract generate(conversation: Conversation, tools?: Tool[]): GenerationHandle;
 }
 
-export class OpenRouterLLM extends LLM {
+export class OpenRouterLLM extends LLM<ChatMessages, ChatRequest["tools"]> {
   constructor(model: Model, temperature: number | undefined) {
-    super(model, temperature);
+    super(model, temperature, new OpenRouterCodec());
   }
 
-  generate(conversation: Conversation, tools?: any): GenerationHandle {
+  generate(conversation: Conversation, tools?: Tool[]): GenerationHandle {
     const client = new OpenRouter({
       apiKey: process.env.OPENROUTER_API_KEY,
       httpReferer: 'https://github.com/lenamerkli/LideCode',
@@ -138,20 +162,21 @@ export class OpenRouterLLM extends LLM {
     const abort_controller = new AbortController();
 
     const done = (async (): Promise<GenerationResult> => {
-      const chatRequest: Record<string, unknown> = {
+      // Built as a typed `ChatRequest` so a codec/provider shape mismatch is a
+      // compile error rather than a runtime SDK validation dump.
+      const chatRequest: ChatRequest = {
         model: this.model.tech_name,
-        // Message `toJSON()` already produces the OpenAI wire format.
-        messages: conversation.messages.map((message) => message.toJSON()),
+        messages: this.codec.encodeMessages(conversation),
         stream: true,
       };
       if (this.temperature !== undefined) {
-        chatRequest["temperature"] = this.temperature;
+        chatRequest.temperature = this.temperature;
       }
       if (tools !== undefined) {
-        chatRequest["tools"] = tools;
+        chatRequest.tools = this.codec.encodeTools(tools);
       }
 
-      const response = await client.chat.send({chatRequest} as never, {signal: abort_controller.signal});
+      const response = await client.chat.send({chatRequest}, {signal: abort_controller.signal});
 
       // With `stream: true` the SDK returns an EventStream of chunks.
       const stream = response as unknown as AsyncIterable<StreamChunk>;

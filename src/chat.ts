@@ -210,7 +210,7 @@ export class Chat {
   private _created_at: string
   private _updated_at: string
   private _model: Model
-  private _llm: LLM
+  private _llm: LLM<unknown, unknown>
   private _temperature: number | undefined
   private readonly _project_name: string
   private readonly _ip: string

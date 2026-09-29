@@ -85,9 +85,21 @@ export class ImageContent {
     return {
       type: "image_url",
       image_url: {
-        url: `data:${this.getMime()};base64,${this.toBase64()}`,
+        url: this.dataUrl,
       },
     };
+  }
+
+  /**
+   * The image as an inline `data:<mime>;base64,<payload>` URL.
+   *
+   * Provider codecs build their own content parts from this rather than from
+   * `toJSON()`, because the field name wrapping it differs per provider
+   * (`image_url` on the wire, `imageUrl` in the OpenRouter SDK) while the data
+   * URL itself is provider-independent.
+   */
+  get dataUrl(): string {
+    return `data:${this.getMime()};base64,${this.toBase64()}`;
   }
 
   private getMime(): string {

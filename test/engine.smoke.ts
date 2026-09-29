@@ -17,7 +17,11 @@ import { hostBash, hostReadFile, hostReplaceInFile, hostWriteToFile } from '../s
 import { format_generation_log, log_generation, log_generation_error } from '../src/logging.js';
 import { deleteSavedChat, deriveTitle, listSavedChats, loadSavedChat, saveSavedChat } from '../src/persistence.js';
 import { build_system_prompt } from '../src/prompts.js';
-import { ToolCall, ToolCallFunction, ToolMessage } from '../src/types.js';
+import {
+  AssistantMessage, Conversation, ImageContent, SystemMessage, TextContent, ToolCall, ToolCallFunction, ToolMessage, UserMessage,
+} from '../src/types.js';
+import { findOrphanToolMessages, OpenAICompatibleCodec, OpenRouterCodec } from '../src/codec.js';
+import { ChatMessages$outboundSchema } from '@openrouter/sdk/models';
 import type { ChatEvent, SavedChat, SerializedMessage, VolumeMount } from '../shared/contract.js';
 
 let failures = 0;
@@ -115,6 +119,85 @@ async function main(): Promise<void> {
     volumeArgument('/host/data', '/home/agent/data', 'ro') === '/host/data:/home/agent/data:ro');
   check('volumeArgument appends an explicit read-write mode',
     volumeArgument('/host/data', '/home/agent/data', 'rw') === '/host/data:/home/agent/data:rw');
+
+  // --- provider codecs (pure, no Docker, no LLM) ----------------------------
+  // Regression cover for a bug where `Message.toJSON()` (the *persistence*
+  // format, snake_case) was fed to the OpenRouter SDK, which expects camelCase.
+  // Images failed validation outright and `tool_calls` were silently stripped,
+  // so the model never saw its own tool calls. The invariant that matters is
+  // the tool-call round trip, so that is what these checks assert.
+  {
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]);
+    const conversation = new Conversation([
+      new SystemMessage('You are helpful.'),
+      new UserMessage([
+        new TextContent('Result from the "view_image" tool call.'),
+        new ImageContent(png),
+      ]),
+      new AssistantMessage(
+        null,
+        [new ToolCall('call_1', new ToolCallFunction('view_image', '{"path":"/tmp/m.png"}'))],
+        'Let me look at that image.',
+        null,
+        'tool_calls',
+      ),
+      new ToolMessage('call_1', 'See the user message.'),
+    ]);
+
+    const openRouterMessages = new OpenRouterCodec().encodeMessages(conversation);
+    // Validated against the SDK's own schema, so these fail the moment the
+    // codec drifts from what the provider actually accepts.
+    const validated = openRouterMessages.map((message) => {
+      const result = ChatMessages$outboundSchema.safeParse(message);
+      check(`the OpenRouter codec emits a schema-valid ${message.role} message`, result.success);
+      return result.success ? result.data : message;
+    });
+
+    // Asserted on the codec's raw output, before the SDK remaps anything: the
+    // SDK input must be camelCase. Asserting this on the parsed result instead
+    // would pass even when the codec emitted the wrong spelling, because the
+    // remap would paper over it.
+    const rawParts = (openRouterMessages[1] as { content?: unknown }).content as Record<string, unknown>[];
+    check('the OpenRouter codec emits camelCase imageUrl, not image_url',
+      typeof rawParts?.[1]?.imageUrl === 'object'
+      && rawParts[1].image_url === undefined
+      && typeof (rawParts[1].imageUrl as { url?: string }).url === 'string');
+    check('the OpenRouter codec keeps the image part next to its caption',
+      Array.isArray(rawParts) && rawParts.length === 2 && rawParts[0]?.type === 'text');
+
+    // And on the parsed result: the SDK converts camelCase back to the wire
+    // format, so this is what OpenRouter ultimately receives.
+    const wireParts = (validated[1] as { content?: unknown }).content as { image_url?: { url: string } }[];
+    check('the image reaches the wire as an image_url data URL',
+      typeof wireParts?.[1]?.image_url?.url === 'string'
+      && wireParts[1].image_url.url.startsWith('data:image/png;base64,'));
+
+    const assistant = validated[2] as { tool_calls?: { id: string; function: { name: string } }[] };
+    check('the OpenRouter codec preserves tool calls through the SDK remap',
+      assistant.tool_calls?.length === 1
+      && assistant.tool_calls[0]?.id === 'call_1'
+      && assistant.tool_calls[0]?.function.name === 'view_image');
+    check('the SDK remaps toolCallId to tool_call_id on the wire',
+      (validated[3] as { tool_call_id?: string }).tool_call_id === 'call_1');
+    check('no tool message is orphaned by the encoding',
+      findOrphanToolMessages(conversation.messages).length === 0);
+
+    // The OpenAI-compatible codec (llama.cpp, OpenAI) must emit the wire
+    // format directly, without an SDK in between to do the remapping.
+    const openAiMessages = new OpenAICompatibleCodec().encodeMessages(conversation);
+    check('the OpenAI-compatible codec emits snake_case image_url',
+      typeof (openAiMessages[1]?.content as { image_url?: { url: string } }[])?.[1]?.image_url?.url === 'string');
+    check('the OpenAI-compatible codec emits snake_case tool_call_id',
+      openAiMessages[3]?.tool_call_id === 'call_1');
+    check('the OpenAI-compatible codec preserves tool calls',
+      openAiMessages[2]?.tool_calls?.[0]?.id === 'call_1');
+    check('the OpenAI-compatible codec never leaks the SDK camelCase spelling',
+      !JSON.stringify(openAiMessages).includes('"imageUrl"')
+      && !JSON.stringify(openAiMessages).includes('"toolCallId"'));
+
+    check('an orphan tool message is detected',
+      findOrphanToolMessages([new ToolMessage('missing', 'x')]).length === 1);
+  }
 
   // --- LLM generation logging (pure, no Docker, no LLM) ----------------------
   const baseLog = {
