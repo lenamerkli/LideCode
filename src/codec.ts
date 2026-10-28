@@ -280,6 +280,39 @@ export class OpenAICompatibleCodec implements ProviderCodec<OpenAIWireMessage, T
 }
 
 // ---------------------------------------------------------------------------
+// Arena
+// ---------------------------------------------------------------------------
+
+/**
+ * Codec for Arena's OpenAI-compatible endpoint (`https://api.arena.ai/v1`).
+ *
+ * The wire shape is the same snake_case OpenAI format that
+ * `OpenAICompatibleCodec` emits, but Arena's request schema is the *standard*
+ * chat-completions message shape only. The non-standard `reasoning` and
+ * `refusal` fields that the shared codec carries are stripped here, so a
+ * strict upstream can never reject the request for unknown message fields
+ * (and the model's own reasoning is not replayed back to it as non-standard
+ * input either).
+ */
+export class ArenaCodec implements ProviderCodec<OpenAIWireMessage, Tool[]> {
+  readonly name = "arena";
+  private readonly inner = new OpenAICompatibleCodec();
+
+  encodeMessages(conversation: Conversation): OpenAIWireMessage[] {
+    return this.inner.encodeMessages(conversation).map((message) => {
+      const encoded: OpenAIWireMessage = { ...message };
+      delete encoded.reasoning;
+      delete encoded.refusal;
+      return encoded;
+    });
+  }
+
+  encodeTools(tools: Tool[]): Tool[] {
+    return this.inner.encodeTools(tools);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Invariants
 // ---------------------------------------------------------------------------
 

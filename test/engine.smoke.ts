@@ -18,9 +18,10 @@ import { format_generation_log, log_generation, log_generation_error } from '../
 import { deleteSavedChat, deriveTitle, listSavedChats, loadSavedChat, saveSavedChat } from '../src/persistence.js';
 import { build_system_prompt } from '../src/prompts.js';
 import {
-  AssistantMessage, Conversation, ImageContent, SystemMessage, TextContent, ToolCall, ToolCallFunction, ToolMessage, UserMessage,
+  AssistantMessage, Conversation, ImageContent, Model, Providers, SystemMessage, TextContent, ToolCall, ToolCallFunction, ToolMessage, UserMessage,
 } from '../src/types.js';
-import { findOrphanToolMessages, OpenAICompatibleCodec, OpenRouterCodec } from '../src/codec.js';
+import { ArenaCodec, findOrphanToolMessages, OpenAICompatibleCodec, OpenRouterCodec } from '../src/codec.js';
+import { applyArenaChunk, get_llm, StreamAccumulator, type ArenaStreamChunk } from '../src/llm.js';
 import { ChatMessages$outboundSchema } from '@openrouter/sdk/models';
 import type { ChatEvent, SavedChat, SerializedMessage, VolumeMount } from '../shared/contract.js';
 
@@ -197,6 +198,69 @@ async function main(): Promise<void> {
 
     check('an orphan tool message is detected',
       findOrphanToolMessages([new ToolMessage('missing', 'x')]).length === 1);
+  }
+
+  // --- Arena provider (pure, no Docker, no LLM) -----------------------------
+  {
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]);
+    const conversation = new Conversation([
+      new SystemMessage('You are helpful.'),
+      new UserMessage([
+        new TextContent('Result from the "view_image" tool call.'),
+        new ImageContent(png),
+      ]),
+      new AssistantMessage(
+        null,
+        [new ToolCall('call_1', new ToolCallFunction('view_image', '{"path":"/tmp/m.png"}'))],
+        'Let me look at that image.',
+        null,
+        'tool_calls',
+      ),
+      new ToolMessage('call_1', 'See the user message.'),
+    ]);
+
+    // Arena accepts the standard OpenAI message shape only, so the
+    // non-standard `reasoning`/`refusal` fields must never reach the wire.
+    const arenaMessages = new ArenaCodec().encodeMessages(conversation);
+    check('the Arena codec emits snake_case image_url',
+      typeof (arenaMessages[1]?.content as { image_url?: { url: string } }[])?.[1]?.image_url?.url === 'string');
+    check('the Arena codec emits snake_case tool_call_id', arenaMessages[3]?.tool_call_id === 'call_1');
+    check('the Arena codec preserves tool calls', arenaMessages[2]?.tool_calls?.[0]?.id === 'call_1');
+    check('the Arena codec strips the non-standard reasoning/refusal fields',
+      !JSON.stringify(arenaMessages).includes('"reasoning"')
+      && !JSON.stringify(arenaMessages).includes('"refusal"'));
+
+    // Arena streams plain OpenAI `chat.completion.chunk` shapes (verified
+    // against the live API): a tool call arrives as fragments, with the id and
+    // the name on the first one and the argument JSON in pieces afterwards.
+    const accumulator = new StreamAccumulator();
+    const feed = (chunk: ArenaStreamChunk) => applyArenaChunk(chunk, accumulator);
+    feed({choices: [{delta: {tool_calls: [{index: 0, id: 'toolu_1', function: {name: 'bash', arguments: ''}}]}, finish_reason: null}]});
+    feed({choices: [{delta: {tool_calls: [{index: 0, function: {arguments: '{"comma'}}]}, finish_reason: null}]});
+    feed({choices: [{delta: {tool_calls: [{index: 0, function: {arguments: 'nd": "e'}}]}, finish_reason: null}]});
+    feed({choices: [{delta: {tool_calls: [{index: 0, function: {arguments: 'cho hi"}'}}]}, finish_reason: null}]});
+    feed({choices: [{delta: {}, finish_reason: 'tool_calls'}]});
+    feed({choices: [], usage: {completion_tokens: 49, cost: 0.001276, prompt_tokens: 393, total_tokens: 442}});
+
+    const message = accumulator.message();
+    check('the Arena stream assembles one tool call from its fragments',
+      message.toolCalls.length === 1
+      && message.toolCalls[0]?.id === 'toolu_1'
+      && message.toolCalls[0]?.function.name === 'bash'
+      && message.toolCalls[0]?.function.arguments === '{"command": "echo hi"}');
+    check('the Arena stream records the finish reason', message.finishReason === 'tool_calls');
+    check('the Arena stream records usage with cost', accumulator.usage?.cost === 0.001276);
+    check('the Arena stream assembles content', (() => {
+      const textAccumulator = new StreamAccumulator();
+      applyArenaChunk({choices: [{delta: {content: 'Hel'}, finish_reason: null}]}, textAccumulator);
+      applyArenaChunk({choices: [{delta: {content: 'lo!'}, finish_reason: null}]}, textAccumulator);
+      applyArenaChunk({choices: [{delta: {}, finish_reason: 'stop'}]}, textAccumulator);
+      const textMessage = textAccumulator.message();
+      return textMessage.content === 'Hello!' && textMessage.finishReason === 'stop';
+    })());
+
+    check('get_llm builds an Arena client for Arena models',
+      typeof get_llm(new Model('Arena Coding Router', 'coding-router-preview', Providers.Arena, true, true, 1000000), undefined).generate === 'function');
   }
 
   // --- LLM generation logging (pure, no Docker, no LLM) ----------------------
@@ -517,6 +581,27 @@ async function main(): Promise<void> {
       && described.includes('/host/src -> /home/agent/src (read-write)'));
   } else {
     console.log('skip - system prompt mount section (no models available)');
+  }
+
+  // --- optional live Arena round-trip (set LIDECODE_SMOKE_ARENA=1) ----------
+  if (process.env['LIDECODE_SMOKE_ARENA'] === '1') {
+    const arenaModel = MODELS.find((model) => model.provider === Providers.Arena);
+    if (arenaModel !== undefined) {
+      try {
+        const handle = get_llm(arenaModel, undefined).generate(
+          new Conversation([new UserMessage([new TextContent('Reply with exactly: ok')])]));
+        const result = await handle.done;
+        check('a live Arena generation returns content', (result.message.content ?? '').length > 0);
+        check('a live Arena generation reports usage', result.usage !== undefined);
+      } catch (error: unknown) {
+        check('a live Arena generation returns content (got '
+          + (error instanceof Error ? error.message : String(error)) + ')', false);
+      }
+    } else {
+      check('a live Arena generation finds the Arena model', false);
+    }
+  } else {
+    console.log('skip - live Arena generation (set LIDECODE_SMOKE_ARENA=1 to enable)');
   }
 
   await engine.shutdown();

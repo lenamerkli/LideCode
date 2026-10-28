@@ -11,6 +11,7 @@ export enum Providers {
   OpenAI = "openai",
   Anthropic = "anthropic",
   LLamaCPP = "llamacpp",
+  Arena = "arena",
 }
 
 

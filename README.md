@@ -84,6 +84,7 @@ API keys are read from, in order of precedence:
 
    ```
    OPENROUTER_API_KEY=...
+   ARENA_API_KEY=...          # enables the Arena Coding Router model
    BRAVE_SEARCH_API_KEY=...   # optional, enables the web search tool
    ```
 

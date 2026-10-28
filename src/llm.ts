@@ -1,8 +1,9 @@
+import {randomBytes} from "node:crypto";
 import {AssistantMessage, Conversation, Model, Providers, ToolCall, ToolCallFunction,} from "./types.js";
 import {log_generation, log_generation_error} from "./logging.js";
 import {OpenRouter} from "@openrouter/sdk";
 import type {ChatMessages, ChatRequest} from "@openrouter/sdk/models";
-import {OpenRouterCodec, type ProviderCodec} from "./codec.js";
+import {ArenaCodec, OpenRouterCodec, type OpenAIWireMessage, type ProviderCodec} from "./codec.js";
 import type {Tool} from "./tool_definitions.js";
 
 /**
@@ -84,6 +85,119 @@ interface StreamChunk {
 
 type StreamChunkChoice = StreamChoice;
 
+// ---------------------------------------------------------------------------
+// Normalized stream assembly (shared by providers)
+// ---------------------------------------------------------------------------
+
+/**
+ * One tool-call fragment as it arrives on the wire, normalized across
+ * providers: both the OpenRouter SDK's camelCase chunks and Arena's plain
+ * OpenAI snake_case chunks are mapped onto this shape before assembling.
+ */
+export interface StreamToolCallDelta {
+  /** Tool-call slot the fragment belongs to; fragments merge per index. */
+  index: number;
+  id?: string | undefined;
+  name?: string | undefined;
+  arguments?: string | undefined;
+}
+
+/** One normalized stream delta, provider-independent. */
+export interface StreamDelta {
+  content?: string | null | undefined;
+  reasoning?: string | null | undefined;
+  refusal?: string | null | undefined;
+  toolCalls?: StreamToolCallDelta[] | undefined;
+}
+
+/**
+ * Sink fed by a provider's stream loop. `generationHandle` wraps it to expose
+ * live state and incremental events; tests can feed a bare `StreamAccumulator`
+ * instead, which implements the same interface.
+ */
+export interface StreamSink {
+  /** Absorb one streamed delta (content, thinking, tool-call fragments). */
+  accept(delta: StreamDelta): void;
+  /** Record the finish reason reported by the provider. */
+  setFinishReason(reason: string | null): void;
+  /** Record the usage stats reported in the stream's final chunk. */
+  setUsage(usage: UsageStats): void;
+}
+
+/**
+ * Accumulates normalized stream deltas into the final `AssistantMessage`.
+ *
+ * Tool-call fragments arrive spread over several deltas (an id and a name on
+ * the first one, the argument JSON in pieces afterwards) and are merged per
+ * fragment index, exactly as the provider streams them.
+ */
+export class StreamAccumulator implements StreamSink {
+  /** Visible assistant text accumulated so far. */
+  text = "";
+  /** Reasoning/thinking tokens accumulated so far. */
+  thinking = "";
+  /** Refusal text accumulated so far, when the provider sends any. */
+  refusal: string | null = null;
+  /** Finish reason of the stream, when the provider reported one. */
+  finish_reason: string | null = null;
+  /** Usage stats from the stream's final chunk, when the provider sent any. */
+  usage: UsageStats | undefined;
+
+  private readonly toolCallFragments = new Map<number, {id?: string | undefined; name: string; args: string}>();
+
+  accept(delta: StreamDelta): void {
+    if (typeof delta.reasoning === "string") {
+      this.thinking += delta.reasoning;
+    }
+    if (typeof delta.content === "string") {
+      this.text += delta.content;
+    }
+    if (typeof delta.refusal === "string") {
+      this.refusal = (this.refusal ?? "") + delta.refusal;
+    }
+    for (const call of delta.toolCalls ?? []) {
+      const existing = this.toolCallFragments.get(call.index) ?? {id: undefined, name: "", args: ""};
+      if (call.id !== undefined) {
+        existing.id = call.id;
+      }
+      if (call.name !== undefined) {
+        existing.name += call.name;
+      }
+      if (call.arguments !== undefined) {
+        existing.args += call.arguments;
+      }
+      this.toolCallFragments.set(call.index, existing);
+    }
+  }
+
+  setFinishReason(reason: string | null): void {
+    this.finish_reason = reason;
+  }
+
+  setUsage(usage: UsageStats): void {
+    this.usage = usage;
+  }
+
+  /** The assembled message, with tool calls in stream order. */
+  message(): AssistantMessage {
+    const toolCalls: ToolCall[] = [];
+    for (const fragment of [...this.toolCallFragments.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([, fragment]) => fragment)) {
+      toolCalls.push(
+        new ToolCall(fragment.id ?? "", new ToolCallFunction(fragment.name, fragment.args))
+      );
+    }
+    return new AssistantMessage(
+      this.text.length > 0 ? this.text : null,
+      toolCalls,
+      this.thinking.length > 0 ? this.thinking : null,
+      this.refusal,
+      this.finish_reason,
+    );
+  }
+}
+
 /**
  * Builds the client for a model's provider.
  *
@@ -94,6 +208,9 @@ type StreamChunkChoice = StreamChoice;
 export function get_llm(model: Model, temperature: number | undefined): LLM<unknown, unknown> {
   if (model.provider == Providers.OpenRouter) {
     return new OpenRouterLLM(model, temperature);
+  }
+  if (model.provider == Providers.Arena) {
+    return new ArenaLLM(model, temperature);
   }
   throw new Error(`Unknown provider: ${model.provider}`);
 }
@@ -122,6 +239,111 @@ export abstract class LLM<TMessages, TTools = Tool[]> {
   abstract generate(conversation: Conversation, tools?: Tool[]): GenerationHandle;
 }
 
+/**
+ * Builds a `GenerationHandle` around one provider's streaming run.
+ *
+ * The observable contract — live `text`/`thinking` state, incremental events,
+ * exactly one `[LLM]` log entry per stream, a `done` promise and `cancel()` —
+ * is the same for every provider, so the plumbing lives here once. The
+ * provider's `run` feeds normalized deltas into the sink and resolves with the
+ * usage stats the stream reported, if any.
+ */
+function generationHandle(
+  model: Model,
+  abort_controller: AbortController,
+  run: (sink: StreamSink) => Promise<UsageStats | undefined>,
+): GenerationHandle {
+  const accumulator = new StreamAccumulator();
+  let finished = false;
+
+  // Observational listeners for incremental stream events. Iterating over a
+  // copy so listeners may unsubscribe from within their own callback, and
+  // swallowing listener errors so a broken subscriber can never disturb
+  // the generation itself.
+  const listeners = new Set<(event: GenerationEvent) => void>();
+  const emit = (event: GenerationEvent): void => {
+    for (const listener of [...listeners]) {
+      try {
+        listener(event);
+      } catch (error: unknown) {
+        console.warn('Generation event listener failed: ' + (error instanceof Error ? error.message : String(error)));
+      }
+    }
+  };
+
+  // Listeners see every delta as it arrives; the accumulator assembles the
+  // final message from the same deltas.
+  const sink: StreamSink = {
+    accept(delta: StreamDelta): void {
+      if (typeof delta.reasoning === "string") {
+        emit({type: 'thinking', delta: delta.reasoning});
+      }
+      if (typeof delta.content === "string") {
+        emit({type: 'text', delta: delta.content});
+      }
+      accumulator.accept(delta);
+    },
+    setFinishReason(reason: string | null): void {
+      accumulator.setFinishReason(reason);
+    },
+    setUsage(usage: UsageStats): void {
+      accumulator.setUsage(usage);
+    },
+  };
+
+  const done = (async (): Promise<GenerationResult> => {
+    try {
+      const usage = await run(sink);
+      const message = accumulator.message();
+
+      // Report the finished request (thinking, content and tool calls) to the
+      // console before notifying listeners, so the log reads in stream order.
+      log_generation({
+        model: model.tech_name,
+        finish_reason: accumulator.finish_reason,
+        thinking: message.reasoning,
+        content: message.content,
+        refusal: message.refusal,
+        tool_calls: message.toolCalls.map((call) => ({name: call.function.name, arguments: call.function.arguments})),
+        usage,
+        cost: usage?.cost ?? undefined,
+      });
+
+      emit({type: 'done', message, cost: usage?.cost ?? undefined});
+      return {
+        message,
+        cost: usage?.cost ?? undefined,
+        usage,
+      };
+    } finally {
+      finished = true;
+    }
+  })();
+
+  // Mark finished even if the stream loop rejects.
+  done.catch((error: unknown) => {
+    finished = true;
+    // A generation that never completes normally (provider error, cancelled
+    // stream) would otherwise leave no trace in the console.
+    log_generation_error(model.tech_name, error);
+    emit({type: 'error', message: error instanceof Error ? error.message : String(error)});
+  });
+
+  return {
+    get text() { return accumulator.text; },
+    get thinking() { return accumulator.thinking; },
+    get isDone() { return finished; },
+    done,
+    cancel() { abort_controller.abort(); },
+    subscribe(listener: (event: GenerationEvent) => void) {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+  };
+}
+
 export class OpenRouterLLM extends LLM<ChatMessages, ChatRequest["tools"]> {
   constructor(model: Model, temperature: number | undefined) {
     super(model, temperature, new OpenRouterCodec());
@@ -135,33 +357,9 @@ export class OpenRouterLLM extends LLM<ChatMessages, ChatRequest["tools"]> {
       appCategories: 'cli-agent,programming-app'
     });
 
-    // --- Live state exposed through the handle -----------------------------
-    let text = "";
-    let thinking = "";
-    let refusal: string | null = null;
-    let finished = false;
-
-    // Observational listeners for incremental stream events. Iterating over a
-    // copy so listeners may unsubscribe from within their own callback, and
-    // swallowing listener errors so a broken subscriber can never disturb
-    // the generation itself.
-    const listeners = new Set<(event: GenerationEvent) => void>();
-    const emit = (event: GenerationEvent): void => {
-      for (const listener of [...listeners]) {
-        try {
-          listener(event);
-        } catch (error: unknown) {
-          console.warn('Generation event listener failed: ' + (error instanceof Error ? error.message : String(error)));
-        }
-      }
-    };
-
-    // Tool-call fragments, accumulated per tool-call index.
-    const toolCallFragments = new Map<number, {id?: string | undefined; name: string; args: string}>();
-
     const abort_controller = new AbortController();
 
-    const done = (async (): Promise<GenerationResult> => {
+    return generationHandle(this.model, abort_controller, async (sink) => {
       // Built as a typed `ChatRequest` so a codec/provider shape mismatch is a
       // compile error rather than a runtime SDK validation dump.
       const chatRequest: ChatRequest = {
@@ -196,6 +394,7 @@ export class OpenRouterLLM extends LLM<ChatMessages, ChatRequest["tools"]> {
           // Final chunk before [DONE]: usage stats (incl. cost), empty choices.
           if (chunk.usage) {
             usage = chunk.usage;
+            sink.setUsage(chunk.usage);
           }
 
           const choice = chunk.choices?.[0];
@@ -204,96 +403,226 @@ export class OpenRouterLLM extends LLM<ChatMessages, ChatRequest["tools"]> {
             finishReason = choice.finishReason;
           }
           if (delta) {
-            if (typeof delta.reasoning === "string") {
-              thinking += delta.reasoning;
-              emit({type: 'thinking', delta: delta.reasoning});
-            }
-            if (typeof delta.content === "string") {
-              text += delta.content;
-              emit({type: 'text', delta: delta.content});
-            }
-            if (typeof delta.refusal === "string") {
-              refusal = (refusal ?? "") + delta.refusal;
-            }
-            for (const call of delta.toolCalls ?? []) {
-              const existing = toolCallFragments.get(call.index) ?? {id: undefined, name: "", args: ""};
-              if (call.id !== undefined) {
-                existing.id = call.id;
-              }
-              if (call.function?.name !== undefined) {
-                existing.name += call.function.name;
-              }
-              if (call.function?.arguments !== undefined) {
-                existing.args += call.function.arguments;
-              }
-              toolCallFragments.set(call.index, existing);
-            }
+            sink.accept({
+              content: delta.content,
+              reasoning: delta.reasoning,
+              refusal: delta.refusal,
+              toolCalls: delta.toolCalls?.map((call) => ({
+                index: call.index,
+                id: call.id,
+                name: call.function?.name,
+                arguments: call.function?.arguments,
+              })),
+            });
           }
         }
       } finally {
-        finished = true;
+        sink.setFinishReason(finishReason);
       }
 
-      // Assemble tool calls in stream order.
-      const toolCalls: ToolCall[] = [];
-      for (const fragment of [...toolCallFragments.entries()]
-        .sort(([a], [b]) => a - b)
-        .map(([, fragment]) => fragment)) {
-        toolCalls.push(
-          new ToolCall(fragment.id ?? "", new ToolCallFunction(fragment.name, fragment.args))
-        );
+      return usage;
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Arena
+// ---------------------------------------------------------------------------
+
+/** Base URL of Arena's OpenAI-compatible chat-completions API. */
+const ARENA_BASE_URL = 'https://api.arena.ai/v1';
+
+/**
+ * OpenCode's user-agent string. Arena rejects anything else: without it (and
+ * without `x-session-affinity`) the server answers HTTP 403
+ * (`organization_client_restricted`), and retrying a 403 can never help.
+ */
+const ARENA_USER_AGENT = 'opencode/latest/2.2.0/cli';
+
+/** Request body for Arena's `/v1/chat/completions` endpoint. */
+interface ArenaChatRequest {
+  model: string;
+  messages: OpenAIWireMessage[];
+  stream: true;
+  temperature?: number | undefined;
+  tools?: Tool[] | undefined;
+}
+
+/**
+ * Structural types for Arena's streaming chunks: the plain OpenAI
+ * `chat.completion.chunk` shape (snake_case `tool_calls` / `finish_reason`),
+ * verified against the live API.
+ */
+export interface ArenaStreamChunk {
+  choices?: ArenaStreamChoice[] | undefined;
+  usage?: UsageStats | null | undefined;
+  error?: {message?: string | null} | null | undefined;
+}
+
+export interface ArenaStreamChoice {
+  delta?: {
+    content?: string | null | undefined;
+    reasoning?: string | null | undefined;
+    /** Alternate reasoning spelling some OpenAI-compatible routers use. */
+    reasoning_content?: string | null | undefined;
+    refusal?: string | null | undefined;
+    tool_calls?: ArenaStreamToolCall[] | undefined;
+  } | undefined;
+  finish_reason?: string | null | undefined;
+}
+
+export interface ArenaStreamToolCall {
+  index: number;
+  id?: string | null | undefined;
+  function?: {name?: string | null | undefined; arguments?: string | null | undefined} | undefined;
+}
+
+/**
+ * Feeds one parsed Arena stream chunk into a sink, normalizing the snake_case
+ * wire shape. Throws on a provider error payload, mirroring the mid-stream
+ * error behaviour of the OpenRouter stream.
+ */
+export function applyArenaChunk(chunk: ArenaStreamChunk, sink: StreamSink): void {
+  if (chunk.error) {
+    throw new Error(`Arena stream error: ${chunk.error.message ?? "unknown error"}`);
+  }
+  if (chunk.usage) {
+    sink.setUsage(chunk.usage);
+  }
+  const choice = chunk.choices?.[0];
+  if (choice?.finish_reason != null) {
+    sink.setFinishReason(choice.finish_reason);
+  }
+  const raw = choice?.delta;
+  if (raw) {
+    sink.accept({
+      content: raw.content,
+      reasoning: raw.reasoning ?? raw.reasoning_content,
+      refusal: raw.refusal,
+      toolCalls: raw.tool_calls?.map((call) => ({
+        index: call.index,
+        id: call.id ?? undefined,
+        name: call.function?.name ?? undefined,
+        arguments: call.function?.arguments ?? undefined,
+      })),
+    });
+  }
+}
+
+/**
+ * Yields the JSON payloads of an OpenAI-style SSE stream (`data: <json>`
+ * lines), stopping at the `data: [DONE]` terminator.
+ */
+async function* readSseData(body: ReadableStream<Uint8Array>): AsyncGenerator<string> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  try {
+    for (;;) {
+      const {done, value} = await reader.read();
+      if (done) {
+        break;
+      }
+      buffer += decoder.decode(value, {stream: true});
+      let newline = buffer.indexOf('\n');
+      while (newline !== -1) {
+        const line = buffer.slice(0, newline).replace(/\r$/, '');
+        buffer = buffer.slice(newline + 1);
+        if (line.startsWith('data:')) {
+          const payload = line.slice('data:'.length).trim();
+          if (payload === '[DONE]') {
+            return;
+          }
+          if (payload.length > 0) {
+            yield payload;
+          }
+        }
+        newline = buffer.indexOf('\n');
+      }
+    }
+  } finally {
+    // Release the stream even when the consumer stops early (a cancelled
+    // generation aborts the request while chunks are still in flight).
+    reader.cancel().catch(() => {});
+  }
+}
+
+/**
+ * Client for Arena's OpenAI-compatible endpoint
+ * (`https://api.arena.ai/v1/chat/completions`, see `ARENA_API.md`).
+ *
+ * Arena only answers requests that look like an interactive OpenCode CLI
+ * session; the headers below are what makes the difference. The request body
+ * and the SSE response are otherwise plain OpenAI chat completions.
+ */
+export class ArenaLLM extends LLM<OpenAIWireMessage, Tool[]> {
+  constructor(model: Model, temperature: number | undefined) {
+    super(model, temperature, new ArenaCodec());
+  }
+
+  generate(conversation: Conversation, tools?: Tool[]): GenerationHandle {
+    const abort_controller = new AbortController();
+
+    return generationHandle(this.model, abort_controller, async (sink) => {
+      const api_key = process.env['ARENA_API_KEY'];
+      if (api_key === undefined || api_key.length === 0) {
+        throw new Error('ARENA_API_KEY is not set; add it to the environment or .env to use Arena models');
       }
 
-      const message = new AssistantMessage(
-        text.length > 0 ? text : null,
-        toolCalls,
-        thinking.length > 0 ? thinking : null,
-        refusal,
-        finishReason,
-      );
-
-      // Report the finished request (thinking, content and tool calls) to the
-      // console before notifying listeners, so the log reads in stream order.
-      log_generation({
+      const body: ArenaChatRequest = {
         model: this.model.tech_name,
-        finish_reason: finishReason,
-        thinking: message.reasoning,
-        content: message.content,
-        refusal: message.refusal,
-        tool_calls: toolCalls.map((call) => ({name: call.function.name, arguments: call.function.arguments})),
-        usage,
-        cost: usage?.cost ?? undefined,
+        messages: this.codec.encodeMessages(conversation),
+        stream: true,
+      };
+      if (this.temperature !== undefined) {
+        body.temperature = this.temperature;
+      }
+      if (tools !== undefined) {
+        body.tools = this.codec.encodeTools(tools);
+      }
+
+      // The session values are arbitrary but must look like OpenCode session
+      // ids (`ses_` + 24 chars): the server checks their shape, not their
+      // identity, so one random id per generation is enough.
+      const session = 'ses_' + randomBytes(12).toString('hex');
+      const response = await fetch(ARENA_BASE_URL + '/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer ' + api_key,
+          'Content-Type': 'application/json',
+          'User-Agent': ARENA_USER_AGENT,
+          'x-opencode-client': 'cli',
+          'x-opencode-session': session,
+          'x-opencode-session-id': session,
+          'x-session-id': session,
+          'x-session-affinity': session,
+        },
+        body: JSON.stringify(body),
+        signal: abort_controller.signal,
       });
 
-      emit({type: 'done', message, cost: usage?.cost ?? undefined});
-      return {
-        message,
-        cost: usage?.cost ?? undefined,
-        usage,
-      };
-    })();
+      if (!response.ok) {
+        // 403 (`organization_client_restricted`) means the headers above no
+        // longer look like an OpenCode session; per the API documentation a
+        // 403 is never retried.
+        const detail = await response.text().catch(() => '');
+        throw new Error(
+          `Arena request failed (HTTP ${response.status})${detail.length > 0 ? ': ' + detail : ''}`
+        );
+      }
+      if (response.body === null) {
+        throw new Error('Arena returned an empty response body');
+      }
 
-    // Mark finished even if the stream loop rejects.
-    done.catch((error: unknown) => {
-      finished = true;
-      // A generation that never completes normally (provider error, cancelled
-      // stream) would otherwise leave no trace in the console.
-      log_generation_error(this.model.tech_name, error);
-      emit({type: 'error', message: error instanceof Error ? error.message : String(error)});
+      let usage: UsageStats | undefined;
+      for await (const payload of readSseData(response.body)) {
+        const chunk = JSON.parse(payload) as ArenaStreamChunk;
+        applyArenaChunk(chunk, sink);
+        if (chunk.usage) {
+          usage = chunk.usage;
+        }
+      }
+      return usage;
     });
-
-    return {
-      get text() { return text; },
-      get thinking() { return thinking; },
-      get isDone() { return finished; },
-      done,
-      cancel() { abort_controller.abort(); },
-      subscribe(listener: (event: GenerationEvent) => void) {
-        listeners.add(listener);
-        return () => {
-          listeners.delete(listener);
-        };
-      },
-    };
   }
 }
