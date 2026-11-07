@@ -21,7 +21,7 @@ import {
   AssistantMessage, Conversation, ImageContent, Model, Providers, SystemMessage, TextContent, ToolCall, ToolCallFunction, ToolMessage, UserMessage,
 } from '../src/types.js';
 import { ArenaCodec, findOrphanToolMessages, OpenAICompatibleCodec, OpenRouterCodec } from '../src/codec.js';
-import { applyArenaChunk, get_llm, StreamAccumulator, type ArenaStreamChunk } from '../src/llm.js';
+import { applyArenaChunk, arenaSessionId, get_llm, StreamAccumulator, type ArenaStreamChunk } from '../src/llm.js';
 import { ChatMessages$outboundSchema } from '@openrouter/sdk/models';
 import type { ChatEvent, SavedChat, SerializedMessage, VolumeMount } from '../shared/contract.js';
 
@@ -261,6 +261,36 @@ async function main(): Promise<void> {
 
     check('get_llm builds an Arena client for Arena models',
       typeof get_llm(new Model('Arena Coding Router', 'coding-router-preview', Providers.Arena, true, true, 1000000), undefined).generate === 'function');
+
+    // The Arena session id is derived from a hash of the first user message:
+    // stable across the turns of one conversation, shaped like an OpenCode id.
+    const sessionId = arenaSessionId(conversation);
+    check('the Arena session id looks like an OpenCode session id', /^ses_[0-9a-f]{24}$/.test(sessionId));
+    check('the Arena session id is deterministic', arenaSessionId(conversation) === sessionId);
+    check('the Arena session id ignores later messages', (() => {
+      const extended = new Conversation([...conversation.messages,
+        new AssistantMessage('done', [], null, null, 'stop'),
+        new UserMessage('and another thing'),
+      ]);
+      return arenaSessionId(extended) === sessionId;
+    })());
+    check('the Arena session id changes with the first user message', (() => {
+      const other = new Conversation([
+        new SystemMessage('You are helpful.'),
+        new UserMessage('A different opening.'),
+      ]);
+      return arenaSessionId(other) !== sessionId;
+    })());
+    check('the Arena session id handles a string first user message', (() => {
+      const plain = new Conversation([new UserMessage('Hello there')]);
+      return /^ses_[0-9a-f]{24}$/.test(arenaSessionId(plain))
+        && arenaSessionId(new Conversation([new UserMessage('Hello there')])) === arenaSessionId(plain);
+    })());
+    check('the Arena session id falls back without a user message', (() => {
+      const systemOnly = new Conversation([new SystemMessage('You are helpful.')]);
+      return /^ses_[0-9a-f]{24}$/.test(arenaSessionId(systemOnly))
+        && arenaSessionId(new Conversation([new SystemMessage('You are helpful.')])) === arenaSessionId(systemOnly);
+    })());
   }
 
   // --- LLM generation logging (pure, no Docker, no LLM) ----------------------

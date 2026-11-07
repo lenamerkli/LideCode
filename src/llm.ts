@@ -1,5 +1,5 @@
-import {randomBytes} from "node:crypto";
-import {AssistantMessage, Conversation, Model, Providers, ToolCall, ToolCallFunction,} from "./types.js";
+import {createHash} from "node:crypto";
+import {AssistantMessage, Conversation, ImageContent, Model, Providers, TextContent, ToolCall, ToolCallFunction, UserMessage,} from "./types.js";
 import {log_generation, log_generation_error} from "./logging.js";
 import {OpenRouter} from "@openrouter/sdk";
 import type {ChatMessages, ChatRequest} from "@openrouter/sdk/models";
@@ -437,7 +437,7 @@ const ARENA_BASE_URL = 'https://api.arena.ai/v1';
  * without `x-session-affinity`) the server answers HTTP 403
  * (`organization_client_restricted`), and retrying a 403 can never help.
  */
-const ARENA_USER_AGENT = 'opencode/latest/2.2.0/cli';
+const ARENA_USER_AGENT = 'opencode/latest/2.2.5/cli';
 
 /** Request body for Arena's `/v1/chat/completions` endpoint. */
 interface ArenaChatRequest {
@@ -548,6 +548,29 @@ async function* readSseData(body: ReadableStream<Uint8Array>): AsyncGenerator<st
 }
 
 /**
+ * Deterministic OpenCode-style session id for Arena requests
+ * (`ses_` + 24 chars), derived from a hash of the conversation's first user
+ * message. The Arena server only checks the id's shape, not its identity, so
+ * any derivation works; hashing the first user message keeps the id stable
+ * across the turns of one conversation (session affinity) without storing
+ * any state. Conversations without a user message hash their serialized
+ * messages instead, which is still deterministic.
+ */
+export function arenaSessionId(conversation: Conversation): string {
+  const first = conversation.messages.find((message) => message instanceof UserMessage);
+  let input: string;
+  if (first instanceof UserMessage) {
+    const content = first.content;
+    input = typeof content === "string"
+      ? content
+      : content.map((part) => (part instanceof ImageContent ? "[image]" : (part as TextContent).text)).join("\n");
+  } else {
+    input = JSON.stringify(conversation.toJSON());
+  }
+  return "ses_" + createHash("sha256").update(input, "utf8").digest("hex").slice(0, 24);
+}
+
+/**
  * Client for Arena's OpenAI-compatible endpoint
  * (`https://api.arena.ai/v1/chat/completions`, see `ARENA_API.md`).
  *
@@ -581,10 +604,11 @@ export class ArenaLLM extends LLM<OpenAIWireMessage, Tool[]> {
         body.tools = this.codec.encodeTools(tools);
       }
 
-      // The session values are arbitrary but must look like OpenCode session
-      // ids (`ses_` + 24 chars): the server checks their shape, not their
-      // identity, so one random id per generation is enough.
-      const session = 'ses_' + randomBytes(12).toString('hex');
+      // The session values must look like OpenCode session ids (`ses_` + 24
+      // chars): the server checks their shape, not their identity. Deriving
+      // the id from a hash of the first user message keeps it stable across
+      // the turns of one conversation (session affinity) without state.
+      const session = arenaSessionId(conversation);
       const response = await fetch(ARENA_BASE_URL + '/chat/completions', {
         method: 'POST',
         headers: {
